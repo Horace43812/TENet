@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import os
+import random
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
@@ -82,13 +84,15 @@ class TENet_Fashion(nn.Module):
 # ==========================================
 # 3. 训练脚本
 # ==========================================
-def train():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+def set_seed(seed=42):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-    # --- 新增：修复下载链接的代码 ---
-    # 强制指定国内或更稳定的镜像源（这里使用常用的镜像规则）
-    datasets.FashionMNIST.resources = [
+
+def _fashion_mnist_resource_variants():
+    github_raw = [
         ("https://github.com/zalandoresearch/fashion-mnist/raw/master/data/fashion/train-images-idx3-ubyte.gz",
          "f68b3c2dcbeaaa9fbdd348bbdeb45c12"),
         ("https://github.com/zalandoresearch/fashion-mnist/raw/master/data/fashion/train-labels-idx1-ubyte.gz",
@@ -98,19 +102,110 @@ def train():
         ("https://github.com/zalandoresearch/fashion-mnist/raw/master/data/fashion/t10k-labels-idx1-ubyte.gz",
          "bb300cfdad3c16e7a124157e65021045")
     ]
-    # ----------------------------
 
-    # 数据预处理
-    transform = transforms.Compose([
+    github_content = [
+        ("https://raw.githubusercontent.com/zalandoresearch/fashion-mnist/master/data/fashion/train-images-idx3-ubyte.gz",
+         "f68b3c2dcbeaaa9fbdd348bbdeb45c12"),
+        ("https://raw.githubusercontent.com/zalandoresearch/fashion-mnist/master/data/fashion/train-labels-idx1-ubyte.gz",
+         "f17e45b128099976906a5758510dd100"),
+        ("https://raw.githubusercontent.com/zalandoresearch/fashion-mnist/master/data/fashion/t10k-images-idx3-ubyte.gz",
+         "bef4ecab320f06d8554227c12da6a029"),
+        ("https://raw.githubusercontent.com/zalandoresearch/fashion-mnist/master/data/fashion/t10k-labels-idx1-ubyte.gz",
+         "bb300cfdad3c16e7a124157e65021045")
+    ]
+
+    jsdelivr = [
+        ("https://cdn.jsdelivr.net/gh/zalandoresearch/fashion-mnist@master/data/fashion/train-images-idx3-ubyte.gz",
+         "f68b3c2dcbeaaa9fbdd348bbdeb45c12"),
+        ("https://cdn.jsdelivr.net/gh/zalandoresearch/fashion-mnist@master/data/fashion/train-labels-idx1-ubyte.gz",
+         "f17e45b128099976906a5758510dd100"),
+        ("https://cdn.jsdelivr.net/gh/zalandoresearch/fashion-mnist@master/data/fashion/t10k-images-idx3-ubyte.gz",
+         "bef4ecab320f06d8554227c12da6a029"),
+        ("https://cdn.jsdelivr.net/gh/zalandoresearch/fashion-mnist@master/data/fashion/t10k-labels-idx1-ubyte.gz",
+         "bb300cfdad3c16e7a124157e65021045")
+    ]
+
+    return [github_raw, github_content, jsdelivr]
+
+
+def _load_fashion_mnist_with_fallback(data_root, train, transform):
+    errors = []
+    for idx, resources in enumerate(_fashion_mnist_resource_variants(), start=1):
+        datasets.FashionMNIST.resources = resources
+        try:
+            split = "train" if train else "test"
+            print(f"Trying FashionMNIST mirror #{idx} for {split}...")
+            return datasets.FashionMNIST(root=data_root, train=train, download=True, transform=transform)
+        except Exception as exc:
+            errors.append(f"mirror #{idx}: {exc}")
+
+    # 所有下载源失败时，尝试直接读取本地缓存
+    try:
+        split = "train" if train else "test"
+        print(f"All mirrors failed, trying local cached {split} set...")
+        return datasets.FashionMNIST(root=data_root, train=train, download=False, transform=transform)
+    except Exception as exc:
+        details = "\n".join(errors)
+        raise RuntimeError(
+            f"FashionMNIST download failed for all mirrors. Root: {data_root}\n{details}\nlocal-cache: {exc}"
+        )
+
+
+def build_dataloaders(data_root=None, batch_size=64, test_batch_size=1000, seed=42):
+    if data_root is None:
+        data_root = './data'
+    os.makedirs(data_root, exist_ok=True)
+
+    # FashionMNIST 常用统计量
+    mean, std = (0.2860,), (0.3530,)
+    train_transform = transforms.Compose([
+        transforms.RandomCrop(28, padding=2),
+        transforms.RandomHorizontalFlip(p=0.5),
         transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,))
+        transforms.Normalize(mean, std)
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std)
     ])
 
-    train_set = datasets.FashionMNIST(root='./data', train=True, download=True, transform=transform)
-    test_set = datasets.FashionMNIST(root='./data', train=False, download=True, transform=transform)
+    train_set = _load_fashion_mnist_with_fallback(data_root, train=True, transform=train_transform)
+    test_set = _load_fashion_mnist_with_fallback(data_root, train=False, transform=test_transform)
 
-    train_loader = DataLoader(train_set, batch_size=64, shuffle=True)
-    test_loader = DataLoader(test_set, batch_size=1000, shuffle=False)
+    num_workers = min(4, os.cpu_count() or 1)
+    pin_memory = torch.cuda.is_available()
+    persistent_workers = num_workers > 0
+    loader_generator = torch.Generator().manual_seed(seed)
+
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        generator=loader_generator,
+        drop_last=True
+    )
+    test_loader = DataLoader(
+        test_set,
+        batch_size=test_batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers
+    )
+
+    print(f"Dataset ready: train={len(train_set)}, test={len(test_set)}, workers={num_workers}")
+    return train_loader, test_loader
+
+
+def train():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    set_seed(42)
+    print(f"Using device: {device}")
+
+    train_loader, test_loader = build_dataloaders(batch_size=64, test_batch_size=1000, seed=42)
 
     model = TENet_Fashion().to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
