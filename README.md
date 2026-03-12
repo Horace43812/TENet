@@ -32,7 +32,7 @@ python Code/train.py
 - `trace_lr_mult=0.05`
 - `phi_temp_init=1.5`
 - `phi_residual_init=0.05`
-- 默认开启 best checkpoint 保存（路径 `Code/tenet_best.pth`）
+- 默认开启 best checkpoint 保存（路径 `Code/checkpoints/tenet_best.pth`）
 
 常用命令：
 

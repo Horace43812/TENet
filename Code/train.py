@@ -17,26 +17,27 @@ def build_args():
     parser.add_argument('--epochs', type=int, default=10, help='number of training epochs')
     parser.add_argument('--batch-size', type=int, default=128, help='train batch size')
     parser.add_argument('--test-batch-size', type=int, default=1000, help='test batch size')
-    parser.add_argument('--lr', type=float, default=8e-4, help='learning rate')
+    parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--lr-scheduler', type=str, default='warmup-cosine', choices=['none', 'warmup-cosine'], help='learning rate scheduler type')
     parser.add_argument('--warmup-epochs', type=int, default=3, help='number of warmup epochs for warmup-cosine scheduler')
     parser.add_argument('--min-lr-ratio', type=float, default=0.1, help='minimum lr ratio for cosine decay')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='weight decay for Adam')
     parser.add_argument('--label-smoothing', type=float, default=0.05, help='label smoothing for CrossEntropyLoss')
     parser.add_argument('--trace-lr-mult', type=float, default=0.05, help='learning rate multiplier for trace branch parameters')
-    parser.add_argument('--alpha', type=int, default=1, help='channel expansion per graphified layer')
+    parser.add_argument('--alpha', type=int, default=6, help='channel expansion per graphified layer')
     parser.add_argument('--trace-init', type=float, default=0.005, help='initial trace enhancement scale')
     parser.add_argument('--phi-temp-init', type=float, default=1.5, help='initial temperature for phi output scaling')
     parser.add_argument('--phi-residual-init', type=float, default=0.05, help='initial residual strength for phi output')
-    parser.add_argument('--classifier-dropout', type=float, default=0.2, help='dropout ratio in classifier head')
+    parser.add_argument('--classifier-dropout', type=float, default=0.1, help='dropout ratio in classifier head')
     parser.add_argument('--no-learnable-phi', action='store_true', help='disable learnable phi and use abs difference')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--num-workers', type=int, default=0, help='number of DataLoader workers')
     parser.add_argument('--cpu', action='store_true', help='force cpu training')
     parser.add_argument('--save-best', action='store_true', help='save checkpoint with best test accuracy')
     parser.add_argument('--no-save-best', action='store_true', help='disable saving checkpoint with best test accuracy')
-    parser.add_argument('--save-path', type=str, default='Code/tenet_best.pth', help='path to save best checkpoint')
+    parser.add_argument('--save-path', type=str, default='checkpoints/tenet_best.pth', help='path to save best checkpoint')
     parser.add_argument('--resume', type=str, default='', help='checkpoint path to resume training from')
+    parser.add_argument('--no-aug', action='store_true', help='disable data augmentation for training set')
     args = parser.parse_args()
     if not args.save_best and not args.no_save_best:
         args.save_best = True
@@ -55,10 +56,22 @@ def train_model(args):
     print(f"Using device: {device}")
 
     # 2. 数据准备 (MNIST 28x28)
-    train_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
+    if args.no_aug:
+        train_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+    else:
+        train_transform = transforms.Compose([
+            transforms.RandomAffine(
+                degrees=10,
+                translate=(0.1, 0.1),
+                scale=(0.95, 1.05),
+                fill=0
+            ),
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
     test_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
@@ -138,7 +151,7 @@ def train_model(args):
         f"Alpha: {args.alpha}, Trace init: {args.trace_init}, "
         f"Phi temp init: {args.phi_temp_init}, Phi residual init: {args.phi_residual_init}, "
         f"Classifier dropout: {args.classifier_dropout}, "
-        f"Learnable phi: {not args.no_learnable_phi}, Seed: {args.seed}"
+        f"Learnable phi: {not args.no_learnable_phi}, Augment: {not args.no_aug}, Seed: {args.seed}"
     )
     if args.save_best:
         print(f"Save best: True, Save path: {args.save_path}")
