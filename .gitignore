@@ -1,0 +1,12 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local datasets
+Code/data/
+
+# Model checkpoints / weights
+*.pth
+
+# Optional: logs and runtime artifacts
+*.log
