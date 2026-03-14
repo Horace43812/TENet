@@ -5,20 +5,21 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-from model_arch import MNIST_TENet
-from model_arch_legacy import MNIST_TENet as MNIST_TENet_Legacy
-# 导入我们之前定义的 MNIST_TENet 和相关层
-# (假设上面的类定义已经在当前环境中)
+from model_mnist28 import MNIST_TENet_Current, MNIST_TENet_Legacy
+from model_rgb256 import TENet_RGB256
+from model_rgb32 import TENet_RGB32
+
 
 def build_args():
-    parser = argparse.ArgumentParser(description='Train MNIST_TENet on MNIST')
+    parser = argparse.ArgumentParser(description='Train TENet on selected dataset')
     default_save_path = 'checkpoints/tenet_best.pth'
-    parser.add_argument('--data-dir', type=str, default='./data', help='MNIST data directory')
+    parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist', 'cifar10', 'rgb256', 'plantvillage'], help='dataset name')
+    parser.add_argument('--data-dir', type=str, default='./data', help='dataset root directory')
     parser.add_argument('--epochs', type=int, default=10, help='number of training epochs')
     parser.add_argument('--batch-size', type=int, default=128, help='train batch size')
-    parser.add_argument('--test-batch-size', type=int, default=1000, help='test batch size')
+    parser.add_argument('--test-batch-size', type=int, default=1000, help='eval/test batch size')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--lr-scheduler', type=str, default='warmup-cosine', choices=['none', 'warmup-cosine'], help='learning rate scheduler type')
     parser.add_argument('--warmup-epochs', type=int, default=3, help='number of warmup epochs for warmup-cosine scheduler')
@@ -26,50 +27,59 @@ def build_args():
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='weight decay for Adam')
     parser.add_argument('--label-smoothing', type=float, default=0.05, help='label smoothing for CrossEntropyLoss')
     parser.add_argument('--trace-lr-mult', type=float, default=0.05, help='learning rate multiplier for trace branch parameters')
-    parser.add_argument('--alpha', type=int, default=6, help='channel expansion per graphified layer')
-    parser.add_argument('--trace-init', type=float, default=0.005, help='initial trace enhancement scale')
+    parser.add_argument('--alpha', type=int, default=8, help='channel expansion per graphified layer (MNIST current model only)')
+    parser.add_argument('--trace-init', type=float, default=0.005, help='initial trace enhancement scale (MNIST current model only)')
     parser.add_argument('--phi-temp-init', type=float, default=1.5, help='initial temperature for phi output scaling')
     parser.add_argument('--phi-residual-init', type=float, default=0.05, help='initial residual strength for phi output')
-    parser.add_argument('--classifier-dropout', type=float, default=0.1, help='dropout ratio in classifier head')
+    parser.add_argument('--classifier-dropout', type=float, default=0.1, help='dropout ratio in classifier head (MNIST model only)')
     parser.add_argument('--no-learnable-phi', action='store_true', help='disable learnable phi and use abs difference')
-    parser.add_argument('--no-trace-branch', action='store_true', help='disable trace enhancement branch in graph layer')
-    parser.add_argument('--no-edge-enhance', action='store_true', help='disable edge square/product enhancement terms')
-    parser.add_argument('--no-directed-flow', action='store_true', help='disable directed incidence-flow enhancement')
-    parser.add_argument('--no-cross-guidance', action='store_true', help='disable cross-stream guidance (C->T and T->C)')
-    parser.add_argument('--use-chebyshev', action='store_true', help='enable chebyshev second-order topology fusion')
-    parser.add_argument('--use-spatial-bridge', action='store_true', help='enable spatial bridge (depthwise dilated conv)')
+    parser.add_argument('--no-trace-branch', action='store_true', help='disable trace enhancement branch in graph layer (MNIST current model only)')
+    parser.add_argument('--no-edge-enhance', action='store_true', help='disable edge square/product enhancement terms (MNIST current model only)')
+    parser.add_argument('--directed-flow', action='store_true', help='enable directed incidence-flow enhancement (MNIST current model only)')
+    parser.add_argument('--no-cross-guidance', action='store_true', help='disable cross-stream guidance (C->T and T->C) (MNIST current model only)')
+    parser.add_argument('--use-chebyshev', action='store_true', help='enable chebyshev second-order topology fusion (MNIST current model only)')
+    parser.add_argument('--use-spatial-bridge', action='store_true', help='enable spatial bridge (depthwise dilated conv) (MNIST current model only)')
+    parser.add_argument('--image-size', type=int, default=256, help='input image size (RGB256 model only)')
+    parser.add_argument('--rgb32-num-layers', type=int, default=2, help='number of graphified layers for RGB32 model')
+    parser.add_argument('--rgb256-num-layers', '--plant-num-layers', dest='rgb256_num_layers', type=int, default=4, help='number of algebraic graph layers for RGB256 model')
+    parser.add_argument('--rgb256-chunk-size', '--plant-chunk-size', dest='rgb256_chunk_size', type=int, default=2048, help='chunk size for graphification in RGB256 model')
+    parser.add_argument('--train-ratio', type=float, default=0.8, help='train split ratio for ImageFolder dataset (RGB256 model only)')
+    parser.add_argument('--val-ratio', type=float, default=0.1, help='validation split ratio for ImageFolder dataset (RGB256 model only)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--num-workers', type=int, default=0, help='number of DataLoader workers')
     parser.add_argument('--cpu', action='store_true', help='force cpu training')
-    parser.add_argument('--save-best', action='store_true', help='save checkpoint with best test accuracy')
-    parser.add_argument('--no-save-best', action='store_true', help='disable saving checkpoint with best test accuracy')
+    parser.add_argument('--save-best', action='store_true', help='save checkpoint with best eval accuracy')
+    parser.add_argument('--no-save-best', action='store_true', help='disable saving checkpoint with best eval accuracy')
     parser.add_argument('--save-path', type=str, default=default_save_path, help='path to save best checkpoint')
     parser.add_argument('--resume', type=str, default='', help='checkpoint path to resume training from')
     parser.add_argument('--no-aug', action='store_true', help='disable data augmentation for training set')
-    parser.add_argument('--model-version', type=str, default='current', choices=['current', 'legacy'], help='choose model architecture version')
+    parser.add_argument('--model-version', type=str, default='current', choices=['current', 'legacy'], help='choose model architecture version (MNIST only)')
     args = parser.parse_args()
+
     if not args.save_best and not args.no_save_best:
         args.save_best = True
     if args.no_save_best:
         args.save_best = False
+
+    if args.dataset == 'plantvillage':
+        args.dataset = 'rgb256'
+
+    if args.dataset != 'mnist' and args.model_version == 'legacy':
+        raise ValueError("model-version=legacy is only supported for dataset=mnist")
+
     if args.save_path == default_save_path:
-        if args.model_version == 'legacy':
+        if args.dataset == 'rgb256':
+            args.save_path = 'checkpoints/tenet_rgb256_best.pth'
+        elif args.dataset == 'cifar10':
+            args.save_path = 'checkpoints/tenet_rgb32_cifar10_best.pth'
+        elif args.model_version == 'legacy':
             args.save_path = 'checkpoints/tenet_legacy_best.pth'
         else:
             args.save_path = 'checkpoints/tenet_current_best.pth'
     return args
 
 
-def train_model(args):
-    # 1. 硬件配置
-    use_cuda = torch.cuda.is_available() and not args.cpu
-    device = torch.device("cuda" if use_cuda else "cpu")
-    torch.manual_seed(args.seed)
-    if use_cuda:
-        torch.cuda.manual_seed_all(args.seed)
-    print(f"Using device: {device}")
-
-    # 2. 数据准备 (MNIST 28x28)
+def build_mnist_datasets(args):
     if args.no_aug:
         train_transform = transforms.Compose([
             transforms.ToTensor(),
@@ -86,6 +96,7 @@ def train_model(args):
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,))
         ])
+
     test_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
@@ -93,6 +104,108 @@ def train_model(args):
 
     train_dataset = datasets.MNIST(args.data_dir, train=True, download=True, transform=train_transform)
     test_dataset = datasets.MNIST(args.data_dir, train=False, transform=test_transform)
+    return train_dataset, test_dataset, 10
+
+
+def build_rgb256_datasets(args):
+    if not os.path.isdir(args.data_dir):
+        raise FileNotFoundError(f"Dataset root does not exist: {args.data_dir}")
+
+    normalize = transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+
+    if args.no_aug:
+        train_transform = transforms.Compose([
+            transforms.Resize((args.image_size, args.image_size)),
+            transforms.ToTensor(),
+            normalize
+        ])
+    else:
+        train_transform = transforms.Compose([
+            transforms.Resize((args.image_size, args.image_size)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ToTensor(),
+            normalize
+        ])
+
+    eval_transform = transforms.Compose([
+        transforms.Resize((args.image_size, args.image_size)),
+        transforms.ToTensor(),
+        normalize
+    ])
+
+    full_dataset_for_split = datasets.ImageFolder(root=args.data_dir)
+    num_classes = len(full_dataset_for_split.classes)
+    total_size = len(full_dataset_for_split)
+
+    train_ratio = float(args.train_ratio)
+    val_ratio = float(args.val_ratio)
+    if train_ratio <= 0.0 or val_ratio < 0.0 or train_ratio + val_ratio >= 1.0:
+        raise ValueError("For RGB256 split: require train_ratio > 0, val_ratio >= 0, and train_ratio + val_ratio < 1")
+
+    train_size = int(total_size * train_ratio)
+    val_size = int(total_size * val_ratio)
+    test_size = total_size - train_size - val_size
+    if train_size <= 0 or test_size <= 0:
+        raise ValueError("Dataset split invalid. Please adjust train-ratio/val-ratio.")
+
+    generator = torch.Generator().manual_seed(args.seed)
+    train_subset, _, test_subset = random_split(
+        full_dataset_for_split,
+        [train_size, val_size, test_size],
+        generator=generator
+    )
+
+    full_train = datasets.ImageFolder(root=args.data_dir, transform=train_transform)
+    full_eval = datasets.ImageFolder(root=args.data_dir, transform=eval_transform)
+
+    train_dataset = torch.utils.data.Subset(full_train, train_subset.indices)
+    test_dataset = torch.utils.data.Subset(full_eval, test_subset.indices)
+    return train_dataset, test_dataset, num_classes
+
+
+def build_cifar10_datasets(args):
+    normalize = transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))
+
+    if args.no_aug:
+        train_transform = transforms.Compose([
+            transforms.Resize((32, 32)),
+            transforms.ToTensor(),
+            normalize
+        ])
+    else:
+        train_transform = transforms.Compose([
+            transforms.Resize((32, 32)),
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ToTensor(),
+            normalize
+        ])
+
+    test_transform = transforms.Compose([
+        transforms.Resize((32, 32)),
+        transforms.ToTensor(),
+        normalize
+    ])
+
+    train_dataset = datasets.CIFAR10(args.data_dir, train=True, download=True, transform=train_transform)
+    test_dataset = datasets.CIFAR10(args.data_dir, train=False, download=True, transform=test_transform)
+    return train_dataset, test_dataset, 10
+
+
+def train_model(args):
+    use_cuda = torch.cuda.is_available() and not args.cpu
+    device = torch.device("cuda" if use_cuda else "cpu")
+    torch.manual_seed(args.seed)
+    if use_cuda:
+        torch.cuda.manual_seed_all(args.seed)
+    print(f"Using device: {device}")
+
+    if args.dataset == 'mnist':
+        train_dataset, test_dataset, num_classes = build_mnist_datasets(args)
+    elif args.dataset == 'cifar10':
+        train_dataset, test_dataset, num_classes = build_cifar10_datasets(args)
+    else:
+        train_dataset, test_dataset, num_classes = build_rgb256_datasets(args)
 
     train_loader = DataLoader(
         train_dataset,
@@ -107,27 +220,64 @@ def train_model(args):
         num_workers=args.num_workers
     )
 
-    # 3. 实例化模型、损失函数和优化器
-    model_cls = MNIST_TENet if args.model_version == 'current' else MNIST_TENet_Legacy
-    common_kwargs = dict(
-        alpha=args.alpha,
-        trace_init=args.trace_init,
-        phi_temp_init=args.phi_temp_init,
-        phi_residual_init=args.phi_residual_init,
-        classifier_dropout=args.classifier_dropout,
-        use_learnable_phi=not args.no_learnable_phi
-    )
-    if args.model_version == 'current':
-        common_kwargs.update(
+    if args.dataset == 'mnist':
+        model_cls = MNIST_TENet_Current if args.model_version == 'current' else MNIST_TENet_Legacy
+        common_kwargs = dict(
+            alpha=args.alpha,
+            trace_init=args.trace_init,
+            phi_temp_init=args.phi_temp_init,
+            phi_residual_init=args.phi_residual_init,
+            classifier_dropout=args.classifier_dropout,
+            use_learnable_phi=not args.no_learnable_phi
+        )
+        if args.model_version == 'current':
+            common_kwargs.update(
+                use_trace_branch=not args.no_trace_branch,
+                use_edge_enhance=not args.no_edge_enhance,
+                use_directed_flow=args.directed_flow,
+                use_cross_stream_guidance=not args.no_cross_guidance,
+                use_chebyshev=args.use_chebyshev,
+                use_spatial_bridge=args.use_spatial_bridge
+            )
+        model = model_cls(**common_kwargs).to(device)
+    elif args.dataset == 'cifar10':
+        model = TENet_RGB32(
+            num_classes=num_classes,
+            num_layers=args.rgb32_num_layers,
+            input_size=32,
+            alpha=args.alpha,
+            trace_init=args.trace_init,
+            phi_temp_init=args.phi_temp_init,
+            phi_residual_init=args.phi_residual_init,
+            classifier_dropout=args.classifier_dropout,
+            use_learnable_phi=not args.no_learnable_phi,
             use_trace_branch=not args.no_trace_branch,
             use_edge_enhance=not args.no_edge_enhance,
-            use_directed_flow=not args.no_directed_flow,
+            use_directed_flow=args.directed_flow,
             use_cross_stream_guidance=not args.no_cross_guidance,
             use_chebyshev=args.use_chebyshev,
             use_spatial_bridge=args.use_spatial_bridge
-        )
+        ).to(device)
+    else:
+        model = TENet_RGB256(
+            num_classes=num_classes,
+            num_layers=args.rgb256_num_layers,
+            chunk_size=args.rgb256_chunk_size,
+            input_size=args.image_size,
+            alpha=args.alpha,
+            trace_init=args.trace_init,
+            phi_temp_init=args.phi_temp_init,
+            phi_residual_init=args.phi_residual_init,
+            classifier_dropout=args.classifier_dropout,
+            use_learnable_phi=not args.no_learnable_phi,
+            use_trace_branch=not args.no_trace_branch,
+            use_edge_enhance=not args.no_edge_enhance,
+            use_directed_flow=args.directed_flow,
+            use_cross_stream_guidance=not args.no_cross_guidance,
+            use_chebyshev=args.use_chebyshev,
+            use_spatial_bridge=args.use_spatial_bridge
+        ).to(device)
 
-    model = model_cls(**common_kwargs).to(device)
     trace_params, base_params = [], []
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -166,26 +316,54 @@ def train_model(args):
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    print(f"Train samples: {len(train_dataset)}, Test samples: {len(test_dataset)}")
+    print(f"Dataset: {args.dataset}")
+    print(f"Train samples: {len(train_dataset)}, Eval samples: {len(test_dataset)}, Num classes: {num_classes}")
     print(
-        f"Epochs: {args.epochs}, Batch size: {args.batch_size}, Test batch size: {args.test_batch_size}, "
+        f"Epochs: {args.epochs}, Batch size: {args.batch_size}, Eval batch size: {args.test_batch_size}, "
         f"Learning rate: {args.lr}, LR scheduler: {args.lr_scheduler}, Warmup epochs: {args.warmup_epochs}, "
         f"Min LR ratio: {args.min_lr_ratio}, Weight decay: {args.weight_decay}, Label smoothing: {args.label_smoothing}, "
         f"Trace LR Mult: {args.trace_lr_mult}, Trace LR: {trace_lr}, Optimizer: Adam"
     )
-    print(
-        f"Alpha: {args.alpha}, Trace init: {args.trace_init}, "
-        f"Phi temp init: {args.phi_temp_init}, Phi residual init: {args.phi_residual_init}, "
-        f"Classifier dropout: {args.classifier_dropout}, "
-        f"Learnable phi: {not args.no_learnable_phi}, Augment: {not args.no_aug}, "
-        f"Model version: {args.model_version}, Seed: {args.seed}"
-    )
-    if args.model_version == 'current':
+
+    if args.dataset == 'mnist':
         print(
-            f"Ablation switches -> Trace: {not args.no_trace_branch}, EdgeEnhance: {not args.no_edge_enhance}, "
-            f"DirectedFlow: {not args.no_directed_flow}, CrossGuidance: {not args.no_cross_guidance}, "
+            f"Alpha: {args.alpha}, Trace init: {args.trace_init}, "
+            f"Phi temp init: {args.phi_temp_init}, Phi residual init: {args.phi_residual_init}, "
+            f"Classifier dropout: {args.classifier_dropout}, "
+            f"Learnable phi: {not args.no_learnable_phi}, Augment: {not args.no_aug}, "
+            f"Model version: {args.model_version}, Seed: {args.seed}"
+        )
+        if args.model_version == 'current':
+            print(
+                f"Ablation switches -> Trace: {not args.no_trace_branch}, EdgeEnhance: {not args.no_edge_enhance}, "
+                f"DirectedFlow: {args.directed_flow}, CrossGuidance: {not args.no_cross_guidance}, "
+                f"Chebyshev: {args.use_chebyshev}, SpatialBridge: {args.use_spatial_bridge}"
+            )
+    elif args.dataset == 'cifar10':
+        print(
+            f"RGB32 model config -> Layers: {args.rgb32_num_layers}, Input size: 32, "
+            f"Alpha: {args.alpha}, Trace init: {args.trace_init}, Classifier dropout: {args.classifier_dropout}, "
+            f"Learnable phi: {not args.no_learnable_phi}, Augment: {not args.no_aug}, Seed: {args.seed}"
+        )
+        print(
+            f"RGB32 ablation switches -> Trace: {not args.no_trace_branch}, EdgeEnhance: {not args.no_edge_enhance}, "
+            f"DirectedFlow: {args.directed_flow}, CrossGuidance: {not args.no_cross_guidance}, "
             f"Chebyshev: {args.use_chebyshev}, SpatialBridge: {args.use_spatial_bridge}"
         )
+    else:
+        print(
+            f"RGB256 model config -> Layers: {args.rgb256_num_layers}, Chunk size: {args.rgb256_chunk_size}, "
+            f"Image size: {args.image_size}, Alpha: {args.alpha}, Trace init: {args.trace_init}, "
+            f"Classifier dropout: {args.classifier_dropout}, Learnable phi: {not args.no_learnable_phi}, "
+            f"Phi temp init: {args.phi_temp_init}, Phi residual init: {args.phi_residual_init}, "
+            f"Augment: {not args.no_aug}, Seed: {args.seed}"
+        )
+        print(
+            f"RGB256 ablation switches -> Trace: {not args.no_trace_branch}, EdgeEnhance: {not args.no_edge_enhance}, "
+            f"DirectedFlow: {args.directed_flow}, CrossGuidance: {not args.no_cross_guidance}, "
+            f"Chebyshev: {args.use_chebyshev}, SpatialBridge: {args.use_spatial_bridge}"
+        )
+
     if args.save_best:
         print(f"Save best: True, Save path: {args.save_path}")
     else:
@@ -207,9 +385,8 @@ def train_model(args):
         start_epoch = ckpt_epoch + 1
         best_test_acc = float(checkpoint.get('test_acc', -1.0))
         print(f"Resumed from: {args.resume}")
-        print(f"Resume epoch: {ckpt_epoch}, Start from epoch: {start_epoch}, Best Test Acc: {best_test_acc:.2f}%")
+        print(f"Resume epoch: {ckpt_epoch}, Start from epoch: {start_epoch}, Best Eval Acc: {best_test_acc:.2f}%")
 
-    # 4. 训练循环
     if start_epoch > args.epochs:
         print(f"No training run because start epoch {start_epoch} > total epochs {args.epochs}.")
         return
@@ -241,13 +418,12 @@ def train_model(args):
         train_loss = running_loss / running_samples
         train_acc = 100.0 * running_correct / running_samples
 
-        # 5. 每个 Epoch 结束后进行测试
         test_loss, test_acc = test(model, device, test_loader, criterion, epoch, args.epochs)
 
         print(
             f"Epoch {epoch}/{args.epochs} | "
             f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% | "
-            f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}% | "
+            f"Eval Loss: {test_loss:.4f}, Eval Acc: {test_acc:.2f}% | "
             f"Gap: {train_acc - test_acc:.2f}% | "
             f"LR(main): {optimizer.param_groups[0]['lr']:.2e}"
         )
@@ -272,7 +448,8 @@ def train_model(args):
                 },
                 args.save_path
             )
-            print(f"New best saved -> Epoch: {epoch}, Test Acc: {test_acc:.2f}%, Path: {args.save_path}")
+            print(f"New best saved -> Epoch: {epoch}, Eval Acc: {test_acc:.2f}%, Path: {args.save_path}")
+
 
 def test(model, device, test_loader, criterion, epoch, epochs):
     model.eval()
@@ -280,7 +457,7 @@ def test(model, device, test_loader, criterion, epoch, epochs):
     correct = 0
     total = 0
     with torch.no_grad():
-        test_bar = tqdm(test_loader, desc=f"Epoch {epoch}/{epochs} [Test]", leave=False)
+        test_bar = tqdm(test_loader, desc=f"Epoch {epoch}/{epochs} [Eval]", leave=False)
         for data, target in test_bar:
             data, target = data.to(device), target.to(device)
             output = model(data)
@@ -296,8 +473,9 @@ def test(model, device, test_loader, criterion, epoch, epochs):
             })
 
     test_loss /= len(test_loader.dataset)
-    accuracy = 100. * correct / len(test_loader.dataset)
+    accuracy = 100.0 * correct / len(test_loader.dataset)
     return test_loss, accuracy
+
 
 if __name__ == "__main__":
     args = build_args()

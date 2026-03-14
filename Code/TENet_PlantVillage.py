@@ -5,173 +5,12 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split
+from model_rgb256 import TENet_RGB256
 
 try:
     from tqdm import tqdm
 except ImportError:
     tqdm = None
-
-
-# ==========================================
-# 1. TENet 核心算子：图化演化层（按 model_arch 重写）
-# ==========================================
-class TrainablePhi(nn.Module):
-    """可学习的连接强度映射函数 phi"""
-
-    def __init__(self, phi_temp_init=1.0, phi_residual_init=0.1):
-        super().__init__()
-        phi_temp_init = max(float(phi_temp_init), 1e-4)
-        phi_residual_init = max(float(phi_residual_init), 1e-6)
-        self.net = nn.Sequential(
-            nn.Linear(2, 4),
-            nn.ReLU(),
-            nn.Linear(4, 1)
-        )
-        self.temperature_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(phi_temp_init, dtype=torch.float32))))
-        self.residual_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(phi_residual_init, dtype=torch.float32))))
-
-    def forward(self, vi, vj):
-        base = torch.abs(vi - vj)
-        combined = torch.stack([vi, vj], dim=-1)  # (M, C, 2)
-        logits = self.net(combined).squeeze(-1)   # (M, C)
-        temperature = torch.nn.functional.softplus(self.temperature_raw) + 1e-4
-        residual_weight = torch.nn.functional.softplus(self.residual_raw)
-        phi_soft = torch.sigmoid(logits / temperature)
-        return base + residual_weight * phi_soft
-
-
-class AlgebraicGraphLayer(nn.Module):
-    def __init__(
-        self,
-        in_channels,
-        chunk_size=2048,
-        phi_temp_init=1.0,
-        phi_residual_init=0.1,
-        use_learnable_phi=True
-    ):
-        super(AlgebraicGraphLayer, self).__init__()
-        self.in_channels = in_channels
-        self.out_channels = in_channels + 1
-        self.chunk_size = chunk_size
-        self.phi = TrainablePhi(phi_temp_init=phi_temp_init, phi_residual_init=phi_residual_init) if use_learnable_phi else None
-        self.conv = nn.Conv2d(in_channels, self.out_channels, kernel_size=10, bias=True)
-        self.register_buffer('L', self._build_laplacian())
-
-    def _build_laplacian(self):
-        A = torch.zeros((10, 10))
-        edges = [
-            (0, 4), (1, 4),
-            (0, 5), (2, 5),
-            (0, 6), (3, 6),
-            (1, 7), (2, 7),
-            (1, 8), (3, 8),
-            (2, 9), (3, 9)
-        ]
-        for i, j in edges:
-            A[i, j] = A[j, i] = 1.0
-        return torch.diag(A.sum(dim=1)) - A
-
-    def _graphify_one_chunk(self, patch_chunk):
-        # patch_chunk: [P, C, 4]
-        v1, v2, v3, v4 = patch_chunk[:, :, 0], patch_chunk[:, :, 1], patch_chunk[:, :, 2], patch_chunk[:, :, 3]
-
-        if self.phi is not None:
-            e12, e13, e14 = self.phi(v1, v2), self.phi(v1, v3), self.phi(v1, v4)
-            e23, e24, e34 = self.phi(v2, v3), self.phi(v2, v4), self.phi(v3, v4)
-        else:
-            e12, e13, e14 = torch.abs(v1 - v2), torch.abs(v1 - v3), torch.abs(v1 - v4)
-            e23, e24, e34 = torch.abs(v2 - v3), torch.abs(v2 - v4), torch.abs(v3 - v4)
-
-        z = torch.stack([v1, v2, v3, v4, e12, e13, e14, e23, e24, e34], dim=2)  # [P, C, 10]
-        G = z.unsqueeze(3) * self.L * z.unsqueeze(2)  # [P, C, 10, 10]
-        return G
-
-    def forward(self, x):
-        # x: [B, C_l, H_l, W_l]
-        b, c, h, w = x.shape
-        if c != self.in_channels:
-            raise ValueError(f"Channel mismatch: expected {self.in_channels}, got {c}")
-        if h % 2 != 0 or w % 2 != 0:
-            raise ValueError(f"Spatial size must be even, got H={h}, W={w}")
-
-        h2, w2 = h // 2, w // 2
-
-        # 划分 2x2 非重叠组，每组每通道 4 个标量
-        patches = x.view(b, c, h2, 2, w2, 2).permute(0, 2, 4, 1, 3, 5)
-        patches = patches.reshape(b * h2 * w2, c, 4)               # [P, C_l, 4]
-
-        # 分块构图，避免显存峰值过高
-        outputs = []
-        for start in range(0, patches.size(0), self.chunk_size):
-            end = min(start + self.chunk_size, patches.size(0))
-            patch_chunk = patches[start:end]                        # [Pc, C_l, 4]
-
-            # M_p ∈ R^(10x10xC_l)
-            G = self._graphify_one_chunk(patch_chunk)              # [Pc, C_l, 10, 10]
-
-            # 单层卷积直接提特征: R^(10x10xC_l) -> R^(C_l+1)
-            y = self.conv(G).squeeze(-1).squeeze(-1)               # [Pc, C_l+1]
-            outputs.append(y)
-
-        y_all = torch.cat(outputs, dim=0)                          # [P, C_l+1]
-        y_all = y_all.view(b, h2, w2, self.out_channels).permute(0, 3, 1, 2)
-        # 输出 X^(l+1): [B, C_l+1, H_l/2, W_l/2]
-        return y_all
-
-
-# ==========================================
-# 2. TENet 整体架构 (针对 PlantVillage 256x256 RGB)
-# ==========================================
-class TENet_PlantVillage(nn.Module):
-    def __init__(
-        self,
-        num_classes=39,
-        num_layers=4,
-        chunk_size=2048,
-        input_size=256,
-        phi_temp_init=1.0,
-        phi_residual_init=0.1,
-        use_learnable_phi=True
-    ):
-        super(TENet_PlantVillage, self).__init__()
-        if num_layers <= 0:
-            raise ValueError("num_layers must be >= 1")
-        if input_size % (2 ** num_layers) != 0:
-            raise ValueError(
-                f"input_size={input_size} is not divisible by 2^{num_layers}; "
-                f"final spatial size must be integer."
-            )
-
-        self.num_layers = num_layers
-        layers = []
-        in_channels = 3
-        for _ in range(num_layers):
-            layers.append(
-                AlgebraicGraphLayer(
-                    in_channels=in_channels,
-                    chunk_size=chunk_size,
-                    phi_temp_init=phi_temp_init,
-                    phi_residual_init=phi_residual_init,
-                    use_learnable_phi=use_learnable_phi
-                )
-            )
-            in_channels += 1
-        self.layers = nn.ModuleList(layers)
-        self.final_channels = in_channels
-        self.final_spatial = input_size // (2 ** num_layers)
-
-        # 分类头：不做池化，直接展平 C_final x H_final x W_final
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.final_channels * self.final_spatial * self.final_spatial, num_classes)
-        )
-
-    def forward(self, x):
-        # x: [B, 3, H, W]
-        feat = x
-        for layer in self.layers:
-            feat = layer(feat)
-        return self.classifier(feat)
 
 
 # ==========================================
@@ -329,7 +168,7 @@ def train(data_root, epochs=20, batch_size=16, lr=1e-3, num_layers=4, chunk_size
         seed=42
     )
 
-    model = TENet_PlantVillage(
+    model = TENet_RGB256(
         num_classes=len(class_names),
         num_layers=num_layers,
         chunk_size=chunk_size,
@@ -346,7 +185,7 @@ def train(data_root, epochs=20, batch_size=16, lr=1e-3, num_layers=4, chunk_size
     print(f"AMP enabled: {use_amp and device.type == 'cuda'}")
 
     best_val_acc = 0.0
-    best_model_path = os.path.join(os.path.dirname(__file__), "tenet_plantvillage_best.pth")
+    best_model_path = os.path.join(os.path.dirname(__file__), "tenet_rgb256_best.pth")
 
     for epoch in range(1, epochs + 1):
         model.train()

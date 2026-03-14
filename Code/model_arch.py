@@ -297,10 +297,10 @@ class MNIST_TENet(nn.Module):
         # 到达 7x7 之后，通道数较少，我们可以增加一个卷积层补强，或者继续压缩
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(t2 * 7 * 7, 128),
+            nn.Linear(t2 * 7 * 7, 48),
             nn.ReLU(),
             nn.Dropout(self.classifier_dropout),
-            nn.Linear(128, 10)
+            nn.Linear(48, 10)
         )
 
     def forward(self, x):
