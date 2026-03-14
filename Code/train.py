@@ -8,11 +8,13 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from model_arch import MNIST_TENet
+from model_arch_legacy import MNIST_TENet as MNIST_TENet_Legacy
 # 导入我们之前定义的 MNIST_TENet 和相关层
 # (假设上面的类定义已经在当前环境中)
 
 def build_args():
     parser = argparse.ArgumentParser(description='Train MNIST_TENet on MNIST')
+    default_save_path = 'checkpoints/tenet_best.pth'
     parser.add_argument('--data-dir', type=str, default='./data', help='MNIST data directory')
     parser.add_argument('--epochs', type=int, default=10, help='number of training epochs')
     parser.add_argument('--batch-size', type=int, default=128, help='train batch size')
@@ -30,19 +32,31 @@ def build_args():
     parser.add_argument('--phi-residual-init', type=float, default=0.05, help='initial residual strength for phi output')
     parser.add_argument('--classifier-dropout', type=float, default=0.1, help='dropout ratio in classifier head')
     parser.add_argument('--no-learnable-phi', action='store_true', help='disable learnable phi and use abs difference')
+    parser.add_argument('--no-trace-branch', action='store_true', help='disable trace enhancement branch in graph layer')
+    parser.add_argument('--no-edge-enhance', action='store_true', help='disable edge square/product enhancement terms')
+    parser.add_argument('--no-directed-flow', action='store_true', help='disable directed incidence-flow enhancement')
+    parser.add_argument('--no-cross-guidance', action='store_true', help='disable cross-stream guidance (C->T and T->C)')
+    parser.add_argument('--use-chebyshev', action='store_true', help='enable chebyshev second-order topology fusion')
+    parser.add_argument('--use-spatial-bridge', action='store_true', help='enable spatial bridge (depthwise dilated conv)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--num-workers', type=int, default=0, help='number of DataLoader workers')
     parser.add_argument('--cpu', action='store_true', help='force cpu training')
     parser.add_argument('--save-best', action='store_true', help='save checkpoint with best test accuracy')
     parser.add_argument('--no-save-best', action='store_true', help='disable saving checkpoint with best test accuracy')
-    parser.add_argument('--save-path', type=str, default='checkpoints/tenet_best.pth', help='path to save best checkpoint')
+    parser.add_argument('--save-path', type=str, default=default_save_path, help='path to save best checkpoint')
     parser.add_argument('--resume', type=str, default='', help='checkpoint path to resume training from')
     parser.add_argument('--no-aug', action='store_true', help='disable data augmentation for training set')
+    parser.add_argument('--model-version', type=str, default='current', choices=['current', 'legacy'], help='choose model architecture version')
     args = parser.parse_args()
     if not args.save_best and not args.no_save_best:
         args.save_best = True
     if args.no_save_best:
         args.save_best = False
+    if args.save_path == default_save_path:
+        if args.model_version == 'legacy':
+            args.save_path = 'checkpoints/tenet_legacy_best.pth'
+        else:
+            args.save_path = 'checkpoints/tenet_current_best.pth'
     return args
 
 
@@ -94,14 +108,26 @@ def train_model(args):
     )
 
     # 3. 实例化模型、损失函数和优化器
-    model = MNIST_TENet(
+    model_cls = MNIST_TENet if args.model_version == 'current' else MNIST_TENet_Legacy
+    common_kwargs = dict(
         alpha=args.alpha,
         trace_init=args.trace_init,
         phi_temp_init=args.phi_temp_init,
         phi_residual_init=args.phi_residual_init,
         classifier_dropout=args.classifier_dropout,
         use_learnable_phi=not args.no_learnable_phi
-    ).to(device)
+    )
+    if args.model_version == 'current':
+        common_kwargs.update(
+            use_trace_branch=not args.no_trace_branch,
+            use_edge_enhance=not args.no_edge_enhance,
+            use_directed_flow=not args.no_directed_flow,
+            use_cross_stream_guidance=not args.no_cross_guidance,
+            use_chebyshev=args.use_chebyshev,
+            use_spatial_bridge=args.use_spatial_bridge
+        )
+
+    model = model_cls(**common_kwargs).to(device)
     trace_params, base_params = [], []
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -151,8 +177,15 @@ def train_model(args):
         f"Alpha: {args.alpha}, Trace init: {args.trace_init}, "
         f"Phi temp init: {args.phi_temp_init}, Phi residual init: {args.phi_residual_init}, "
         f"Classifier dropout: {args.classifier_dropout}, "
-        f"Learnable phi: {not args.no_learnable_phi}, Augment: {not args.no_aug}, Seed: {args.seed}"
+        f"Learnable phi: {not args.no_learnable_phi}, Augment: {not args.no_aug}, "
+        f"Model version: {args.model_version}, Seed: {args.seed}"
     )
+    if args.model_version == 'current':
+        print(
+            f"Ablation switches -> Trace: {not args.no_trace_branch}, EdgeEnhance: {not args.no_edge_enhance}, "
+            f"DirectedFlow: {not args.no_directed_flow}, CrossGuidance: {not args.no_cross_guidance}, "
+            f"Chebyshev: {args.use_chebyshev}, SpatialBridge: {args.use_spatial_bridge}"
+        )
     if args.save_best:
         print(f"Save best: True, Save path: {args.save_path}")
     else:

@@ -38,7 +38,13 @@ class GraphifiedLayer(nn.Module):
         trace_init=0.1,
         phi_temp_init=1.0,
         phi_residual_init=0.1,
-        use_learnable_phi=True
+        use_learnable_phi=True,
+        use_trace_branch=True,
+        use_edge_enhance=True,
+        use_directed_flow=True,
+        use_cross_stream_guidance=True,
+        use_chebyshev=False,
+        use_spatial_bridge=False
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -46,11 +52,19 @@ class GraphifiedLayer(nn.Module):
         self.alpha = alpha
         self.out_channels = in_channels + self.alpha
         self.content_out_channels = self.content_in_channels + self.alpha
+        self.use_trace_branch = use_trace_branch
+        self.use_edge_enhance = use_edge_enhance
+        self.use_directed_flow = use_directed_flow
+        self.use_cross_stream_guidance = use_cross_stream_guidance
+        self.use_chebyshev = use_chebyshev
+        self.use_spatial_bridge = use_spatial_bridge
 
         # 预定义拉普拉斯矩阵结构
         self.register_buffer('L', self._build_laplacian())
-        self.register_buffer('B_incidence', self._build_incidence())
-        # self.register_buffer('L2', self.L @ self.L)  # 切比雪夫二阶项先停用
+        if self.use_directed_flow:
+            self.register_buffer('B_incidence', self._build_incidence())
+        if self.use_chebyshev:
+            self.register_buffer('L2', self.L @ self.L)
         self.register_buffer('L_diag', torch.diagonal(self.L))
 
         # 可学习的 phi
@@ -58,35 +72,42 @@ class GraphifiedLayer(nn.Module):
 
         # 10x10 图矩阵拓扑提取：使用单层卷积直接映射到输出通道
         self.topology_extractor = nn.Conv2d(in_channels, self.out_channels, kernel_size=10, bias=True)
-        # self.topo_mix_logits = nn.Parameter(torch.tensor([2.2, -2.2], dtype=torch.float32))  # 切比雪夫二阶融合先停用
+        if self.use_chebyshev:
+            self.topo_mix_logits = nn.Parameter(torch.tensor([2.2, -2.2], dtype=torch.float32))
         self.norm = nn.BatchNorm2d(self.out_channels)
-        # self.spatial_dw = nn.Conv2d(
-        #     self.out_channels,
-        #     self.out_channels,
-        #     kernel_size=3,
-        #     padding=2,
-        #     dilation=2,
-        #     groups=self.out_channels,
-        #     bias=False
-        # )
-        # self.spatial_gate = nn.Parameter(torch.full((self.out_channels,), 0.01, dtype=torch.float32))
+        if self.use_spatial_bridge:
+            self.spatial_dw = nn.Conv2d(
+                self.out_channels,
+                self.out_channels,
+                kernel_size=3,
+                padding=2,
+                dilation=2,
+                groups=self.out_channels,
+                bias=False
+            )
+            self.spatial_gate = nn.Parameter(torch.full((self.out_channels,), 0.01, dtype=torch.float32))
         self.content_proj = nn.Conv2d(self.content_in_channels, self.content_out_channels, kernel_size=1, bias=True)
         self.content_norm = nn.BatchNorm2d(self.content_out_channels)
-        self.align_proj = nn.Conv2d(self.content_out_channels, self.out_channels, kernel_size=1, bias=True)
-        self.topo_to_content_proj = nn.Conv2d(self.out_channels, self.content_out_channels, kernel_size=1, bias=True)
-        self.gamma = nn.Parameter(torch.full((self.out_channels,), 0.01, dtype=torch.float32))
-        self.beta = nn.Parameter(torch.full((self.content_out_channels,), 0.01, dtype=torch.float32))
+        if self.use_cross_stream_guidance:
+            self.align_proj = nn.Conv2d(self.content_out_channels, self.out_channels, kernel_size=1, bias=True)
+            self.topo_to_content_proj = nn.Conv2d(self.out_channels, self.content_out_channels, kernel_size=1, bias=True)
+            self.gamma = nn.Parameter(torch.full((self.out_channels,), 0.01, dtype=torch.float32))
+            self.beta = nn.Parameter(torch.full((self.content_out_channels,), 0.01, dtype=torch.float32))
         # trace 补强分支：将每个 2x2 局部块的 trace 特征投影到输出通道
-        self.trace_proj = nn.Conv2d(in_channels, self.out_channels, kernel_size=1, bias=True)
+        if self.use_trace_branch:
+            self.trace_proj = nn.Conv2d(in_channels, self.out_channels, kernel_size=1, bias=True)
         main_init = 0.9
         self.main_logit = nn.Parameter(torch.logit(torch.full((self.out_channels,), main_init, dtype=torch.float32)))
-        trace_init = float(max(min(trace_init, 1.0 - 1e-4), 1e-4))
-        self.trace_logit = nn.Parameter(torch.logit(torch.full((self.out_channels,), trace_init, dtype=torch.float32)))
+        if self.use_trace_branch:
+            trace_init = float(max(min(trace_init, 1.0 - 1e-4), 1e-4))
+            self.trace_logit = nn.Parameter(torch.logit(torch.full((self.out_channels,), trace_init, dtype=torch.float32)))
         edge_sq_init = 0.01
         edge_mul_init = 0.01
-        self.edge_sq_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(edge_sq_init, dtype=torch.float32))))
-        self.edge_mul_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(edge_mul_init, dtype=torch.float32))))
-        self.flow_gate = nn.Parameter(torch.full((6,), 0.01, dtype=torch.float32))
+        if self.use_edge_enhance:
+            self.edge_sq_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(edge_sq_init, dtype=torch.float32))))
+            self.edge_mul_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(edge_mul_init, dtype=torch.float32))))
+        if self.use_directed_flow:
+            self.flow_gate = nn.Parameter(torch.full((6,), 0.01, dtype=torch.float32))
 
     def _build_laplacian(self):
         A = torch.zeros((10, 10))
@@ -116,10 +137,11 @@ class GraphifiedLayer(nn.Module):
         # 拓扑流分组 2x2
         x_grouped = x_topo.view(B, C, H // 2, 2, W // 2, 2).permute(0, 1, 2, 4, 3, 5).reshape(-1, C, 4)
         v1, v2, v3, v4 = x_grouped[:, :, 0], x_grouped[:, :, 1], x_grouped[:, :, 2], x_grouped[:, :, 3]
-        # 有向流: Flow = B^T z_vertex，保留符号方向
-        vertex_stack = torch.stack([v1, v2, v3, v4], dim=2)
-        flow = torch.matmul(vertex_stack, self.B_incidence)
-        flow12, flow13, flow14, flow23, flow24, flow34 = flow.unbind(dim=2)
+        if self.use_directed_flow:
+            # 有向流: Flow = B^T z_vertex，保留符号方向
+            vertex_stack = torch.stack([v1, v2, v3, v4], dim=2)
+            flow = torch.matmul(vertex_stack, self.B_incidence)
+            flow12, flow13, flow14, flow23, flow24, flow34 = flow.unbind(dim=2)
 
         # 内容流分组 2x2，均值池化后做 1x1 升维投影
         x_content_grouped = x_content.view(B, C_content, H // 2, 2, W // 2, 2).permute(0, 1, 2, 4, 3, 5).reshape(-1, C_content, 4)
@@ -135,66 +157,73 @@ class GraphifiedLayer(nn.Module):
             e12, e13, e14 = torch.abs(v1 - v2), torch.abs(v1 - v3), torch.abs(v1 - v4)
             e23, e24, e34 = torch.abs(v2 - v3), torch.abs(v2 - v4), torch.abs(v3 - v4)
 
-        d12, d13, d14 = torch.abs(v1 - v2), torch.abs(v1 - v3), torch.abs(v1 - v4)
-        d23, d24, d34 = torch.abs(v2 - v3), torch.abs(v2 - v4), torch.abs(v3 - v4)
-        p12, p13, p14 = v1 * v2, v1 * v3, v1 * v4
-        p23, p24, p34 = v2 * v3, v2 * v4, v3 * v4
-        edge_sq_scale = F.softplus(self.edge_sq_raw)
-        edge_mul_scale = F.softplus(self.edge_mul_raw)
-        e12 = e12 + edge_sq_scale * (d12 ** 2) + edge_mul_scale * p12
-        e13 = e13 + edge_sq_scale * (d13 ** 2) + edge_mul_scale * p13
-        e14 = e14 + edge_sq_scale * (d14 ** 2) + edge_mul_scale * p14
-        e23 = e23 + edge_sq_scale * (d23 ** 2) + edge_mul_scale * p23
-        e24 = e24 + edge_sq_scale * (d24 ** 2) + edge_mul_scale * p24
-        e34 = e34 + edge_sq_scale * (d34 ** 2) + edge_mul_scale * p34
+        if self.use_edge_enhance:
+            d12, d13, d14 = torch.abs(v1 - v2), torch.abs(v1 - v3), torch.abs(v1 - v4)
+            d23, d24, d34 = torch.abs(v2 - v3), torch.abs(v2 - v4), torch.abs(v3 - v4)
+            p12, p13, p14 = v1 * v2, v1 * v3, v1 * v4
+            p23, p24, p34 = v2 * v3, v2 * v4, v3 * v4
+            edge_sq_scale = F.softplus(self.edge_sq_raw)
+            edge_mul_scale = F.softplus(self.edge_mul_raw)
+            e12 = e12 + edge_sq_scale * (d12 ** 2) + edge_mul_scale * p12
+            e13 = e13 + edge_sq_scale * (d13 ** 2) + edge_mul_scale * p13
+            e14 = e14 + edge_sq_scale * (d14 ** 2) + edge_mul_scale * p14
+            e23 = e23 + edge_sq_scale * (d23 ** 2) + edge_mul_scale * p23
+            e24 = e24 + edge_sq_scale * (d24 ** 2) + edge_mul_scale * p24
+            e34 = e34 + edge_sq_scale * (d34 ** 2) + edge_mul_scale * p34
 
-        flow_weight = torch.tanh(self.flow_gate)
-        e12 = e12 + flow_weight[0] * flow12
-        e13 = e13 + flow_weight[1] * flow13
-        e14 = e14 + flow_weight[2] * flow14
-        e23 = e23 + flow_weight[3] * flow23
-        e24 = e24 + flow_weight[4] * flow24
-        e34 = e34 + flow_weight[5] * flow34
+        if self.use_directed_flow:
+            flow_weight = torch.tanh(self.flow_gate)
+            e12 = e12 + flow_weight[0] * flow12
+            e13 = e13 + flow_weight[1] * flow13
+            e14 = e14 + flow_weight[2] * flow14
+            e23 = e23 + flow_weight[3] * flow23
+            e24 = e24 + flow_weight[4] * flow24
+            e34 = e34 + flow_weight[5] * flow34
 
         z = torch.stack([v1, v2, v3, v4, e12, e13, e14, e23, e24, e34], dim=2)
         z_sq = z ** 2
 
-        # 图化矩阵生成: 仅使用一阶拓扑（切比雪夫二阶项先停用）
-        G = z.unsqueeze(3) * self.L * z.unsqueeze(2)
-        G_mean = G.mean(dim=(2, 3), keepdim=True)
-        G_std = G.std(dim=(2, 3), keepdim=True).clamp_min(1e-6)
-        G = (G - G_mean) / G_std
-
-        # 若需恢复切比雪夫二阶项，可启用以下代码：
-        # G1 = z.unsqueeze(3) * self.L * z.unsqueeze(2)
-        # G2 = z.unsqueeze(3) * self.L2 * z.unsqueeze(2)
-        # G1 = (G1 - G1.mean(dim=(2, 3), keepdim=True)) / G1.std(dim=(2, 3), keepdim=True).clamp_min(1e-6)
-        # G2 = (G2 - G2.mean(dim=(2, 3), keepdim=True)) / G2.std(dim=(2, 3), keepdim=True).clamp_min(1e-6)
-        # topo_mix = torch.softmax(self.topo_mix_logits, dim=0)
-        # G = topo_mix[0] * G1 + topo_mix[1] * G2
+        if self.use_chebyshev:
+            G1 = z.unsqueeze(3) * self.L * z.unsqueeze(2)
+            G2 = z.unsqueeze(3) * self.L2 * z.unsqueeze(2)
+            G1 = (G1 - G1.mean(dim=(2, 3), keepdim=True)) / G1.std(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+            G2 = (G2 - G2.mean(dim=(2, 3), keepdim=True)) / G2.std(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+            topo_mix = torch.softmax(self.topo_mix_logits, dim=0)
+            G = topo_mix[0] * G1 + topo_mix[1] * G2
+        else:
+            G = z.unsqueeze(3) * self.L * z.unsqueeze(2)
+            G_mean = G.mean(dim=(2, 3), keepdim=True)
+            G_std = G.std(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+            G = (G - G_mean) / G_std
         trace = (z_sq * self.L_diag).sum(dim=2)
 
         # 拓扑特征提取
         main_out = self.topology_extractor(G).squeeze(-1).squeeze(-1)
         main_out = main_out.view(B, H // 2, W // 2, self.out_channels).permute(0, 3, 1, 2).contiguous()
-        trace_map = trace.view(B, H // 2, W // 2, C).permute(0, 3, 1, 2).contiguous()
-        trace_enhance = self.trace_proj(trace_map)
-        main_gate = torch.sigmoid(self.main_logit).view(1, self.out_channels, 1, 1)
-        trace_gate = torch.sigmoid(self.trace_logit).view(1, self.out_channels, 1, 1)
-        x_topo_out = main_gate * main_out + trace_gate * trace_enhance
+        if self.use_trace_branch:
+            trace_map = trace.view(B, H // 2, W // 2, C).permute(0, 3, 1, 2).contiguous()
+            trace_enhance = self.trace_proj(trace_map)
+            main_gate = torch.sigmoid(self.main_logit).view(1, self.out_channels, 1, 1)
+            trace_gate = torch.sigmoid(self.trace_logit).view(1, self.out_channels, 1, 1)
+            x_topo_out = main_gate * main_out + trace_gate * trace_enhance
+        else:
+            x_topo_out = main_out
 
-        c_to_t_guidance = self.align_proj(x_content_out)
-        gamma_weighted = torch.tanh(self.gamma).view(1, self.out_channels, 1, 1)
-        x_topo_out = x_topo_out + gamma_weighted * c_to_t_guidance
+        if self.use_cross_stream_guidance:
+            c_to_t_guidance = self.align_proj(x_content_out)
+            gamma_weighted = torch.tanh(self.gamma).view(1, self.out_channels, 1, 1)
+            x_topo_out = x_topo_out + gamma_weighted * c_to_t_guidance
 
         x_topo_out = F.relu(self.norm(x_topo_out))
-        # spatial_guidance = self.spatial_dw(x_topo_out)
-        # spatial_gate = torch.tanh(self.spatial_gate).view(1, self.out_channels, 1, 1)
-        # x_topo_out = x_topo_out + spatial_gate * spatial_guidance
+        if self.use_spatial_bridge:
+            spatial_guidance = self.spatial_dw(x_topo_out)
+            spatial_gate = torch.tanh(self.spatial_gate).view(1, self.out_channels, 1, 1)
+            x_topo_out = x_topo_out + spatial_gate * spatial_guidance
 
-        t_to_c_guidance = self.topo_to_content_proj(x_topo_out)
-        beta_weighted = torch.tanh(self.beta).view(1, self.content_out_channels, 1, 1)
-        x_content_out = x_content_out + beta_weighted * t_to_c_guidance
+        if self.use_cross_stream_guidance:
+            t_to_c_guidance = self.topo_to_content_proj(x_topo_out)
+            beta_weighted = torch.tanh(self.beta).view(1, self.content_out_channels, 1, 1)
+            x_content_out = x_content_out + beta_weighted * t_to_c_guidance
 
         x_topo_out = F.relu(x_topo_out)
         x_content_out = F.relu(x_content_out)
@@ -209,7 +238,13 @@ class MNIST_TENet(nn.Module):
         phi_temp_init=1.0,
         phi_residual_init=0.1,
         classifier_dropout=0.1,
-        use_learnable_phi=True
+        use_learnable_phi=True,
+        use_trace_branch=True,
+        use_edge_enhance=True,
+        use_directed_flow=True,
+        use_cross_stream_guidance=True,
+        use_chebyshev=False,
+        use_spatial_bridge=False
     ):
         super().__init__()
         self.alpha = alpha
@@ -218,6 +253,12 @@ class MNIST_TENet(nn.Module):
         self.phi_residual_init = phi_residual_init
         self.classifier_dropout = classifier_dropout
         self.use_learnable_phi = use_learnable_phi
+        self.use_trace_branch = use_trace_branch
+        self.use_edge_enhance = use_edge_enhance
+        self.use_directed_flow = use_directed_flow
+        self.use_cross_stream_guidance = use_cross_stream_guidance
+        self.use_chebyshev = use_chebyshev
+        self.use_spatial_bridge = use_spatial_bridge
 
         # MNIST 28x28 -> 14x14 -> 7x7
         self.layer1 = GraphifiedLayer(
@@ -227,7 +268,13 @@ class MNIST_TENet(nn.Module):
             trace_init=self.trace_init,
             phi_temp_init=self.phi_temp_init,
             phi_residual_init=self.phi_residual_init,
-            use_learnable_phi=self.use_learnable_phi
+            use_learnable_phi=self.use_learnable_phi,
+            use_trace_branch=self.use_trace_branch,
+            use_edge_enhance=self.use_edge_enhance,
+            use_directed_flow=self.use_directed_flow,
+            use_cross_stream_guidance=self.use_cross_stream_guidance,
+            use_chebyshev=self.use_chebyshev,
+            use_spatial_bridge=self.use_spatial_bridge
         )
         t1 = self.layer1.out_channels
         c1 = self.layer1.content_out_channels
@@ -238,7 +285,13 @@ class MNIST_TENet(nn.Module):
             trace_init=self.trace_init,
             phi_temp_init=self.phi_temp_init,
             phi_residual_init=self.phi_residual_init,
-            use_learnable_phi=self.use_learnable_phi
+            use_learnable_phi=self.use_learnable_phi,
+            use_trace_branch=self.use_trace_branch,
+            use_edge_enhance=self.use_edge_enhance,
+            use_directed_flow=self.use_directed_flow,
+            use_cross_stream_guidance=self.use_cross_stream_guidance,
+            use_chebyshev=self.use_chebyshev,
+            use_spatial_bridge=self.use_spatial_bridge
         )
         t2 = self.layer2.out_channels
         # 到达 7x7 之后，通道数较少，我们可以增加一个卷积层补强，或者继续压缩
@@ -247,7 +300,7 @@ class MNIST_TENet(nn.Module):
             nn.Linear(t2 * 7 * 7, 128),
             nn.ReLU(),
             nn.Dropout(self.classifier_dropout),
-            nn.Linear(128, 10),
+            nn.Linear(128, 10)
         )
 
     def forward(self, x):
