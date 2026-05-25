@@ -1,0 +1,102 @@
+{
+  "config": {
+    "dataset": "cifar10",
+    "alpha": 8,
+    "num_layers": 4,
+    "epochs": 2,
+    "batch_size": 128,
+    "lr": 0.001,
+    "weight_decay": 0.0001,
+    "seed": 42,
+    "probe_batches": 4,
+    "probe_epochs": 15,
+    "probe_lr": 0.01,
+    "use_trace_branch": true,
+    "use_edge_enhance": false,
+    "use_cross_guidance": true,
+    "cpu": true,
+    "checkpoint": "",
+    "no_train": false,
+    "no_save_model": false,
+    "out_root": "",
+    "run_id": "20260524_192730_cifar10_a8_L4_tr+cg",
+    "data_dir": "./data",
+    "max_train_batches": 50,
+    "log_every": 25
+  },
+  "num_params": 208546,
+  "train_stats": {
+    "final_train_acc": 0.20484375,
+    "final_val_acc": 0.2371,
+    "history": [
+      {
+        "epoch": 1,
+        "train_loss": 2.2869056987762453,
+        "train_acc": 0.13671875,
+        "val_acc": 0.1445
+      },
+      {
+        "epoch": 2,
+        "train_loss": 2.1590132522583008,
+        "train_acc": 0.20484375,
+        "val_acc": 0.2371
+      }
+    ]
+  },
+  "layer_metrics": [
+    {
+      "name": "layers.0",
+      "effective_rank": 8.790274620056152,
+      "num_channels": 11,
+      "er_ratio": 0.7991158745505593,
+      "cka_input": 0.44736865162849426,
+      "cka_next": 0.8239735960960388
+    },
+    {
+      "name": "layers.1",
+      "effective_rank": 15.018974304199219,
+      "num_channels": 19,
+      "er_ratio": 0.7904723317999589,
+      "cka_input": 0.37109750509262085,
+      "cka_next": 0.8769530057907104
+    },
+    {
+      "name": "layers.2",
+      "effective_rank": 24.756162643432617,
+      "num_channels": 27,
+      "er_ratio": 0.9168949127197266,
+      "cka_input": 0.41636112332344055,
+      "cka_next": 0.7136952877044678
+    },
+    {
+      "name": "layers.3",
+      "effective_rank": 26.168912887573242,
+      "num_channels": 35,
+      "er_ratio": 0.7476832253592355,
+      "cka_input": 0.3011191487312317,
+      "cka_next": null
+    }
+  ],
+  "linear_probe": [
+    {
+      "name": "layers.0",
+      "dim": 2816,
+      "val_acc": 0.4050000011920929
+    },
+    {
+      "name": "layers.1",
+      "dim": 1216,
+      "val_acc": 0.41100001335144043
+    },
+    {
+      "name": "layers.2",
+      "dim": 432,
+      "val_acc": 0.3569999933242798
+    },
+    {
+      "name": "layers.3",
+      "dim": 140,
+      "val_acc": 0.30000001192092896
+    }
+  ]
+}
