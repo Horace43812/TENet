@@ -6,6 +6,7 @@ __pycache__/
 Code/data/
 ViTPruning/data/
 ViTPruning/checkpoints/
+TENetMechanism/runs/
 
 # Model checkpoints / weights
 *.pth

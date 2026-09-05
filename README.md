@@ -1,5 +1,7 @@
 # TENet — Topology-Enhanced Network
 
+独立机制研究工作区：[TENetMechanism](TENetMechanism/README.md)。支持同一 ImageFolder 数据集上的独立训练、层内类别可分性分析、退化样本定位和固定权重干预。
+
 TENet（Topology-Enhanced Network，拓扑增强网络）是一种将**图论 / 代数拓扑**与卷积神经网络相结合的新型神经网络架构。
 它的核心思想是：**把每一个 2×2 局部图像块显式地“图化（graphify）”为一张带有边特征的小图**，再通过预定义的拉普拉斯算子提取图的二次型 / 谱特征，与传统的内容流（content stream）双流交互，从而在保持卷积归纳偏置的同时引入显式的拓扑结构信息。
 
