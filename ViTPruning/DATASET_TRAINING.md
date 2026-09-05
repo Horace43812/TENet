@@ -1,5 +1,15 @@
 # 服务器数据集训练
 
+## 当前默认配置与结果汇总
+
+直接运行 `python train.py` 使用 ImageFolder：TENet 同级 `dataset`，共有类别中从下标 0 开始选 10 类，每类训练/验证最多 100/20 张；输入 64、patch 8、维度 192、12 层、3 个头；magnitude 在第 6 层后保留 50% token；50 轮、batch 32、workers 4、lr 3e-4、weight decay 0.05、seed 42。默认输出目录为 `checkpoints/subset_common_magnitude`。
+
+每次成功训练完成，自动向 `ViTPruning/checkpoints/training_results.jsonl` **末尾追加**一条 JSON 记录，不覆盖之前的记录。记录依次包含运行 ID 和 UTC 时间、本次完整配置及类别映射、汇总指标、逐轮训练/验证 loss 和准确率及学习率。准确率单位为百分比；耗时为本次程序运行耗时。续训记录包含 checkpoint 中已有的历史，并注明本次起始轮次；没有执行新轮次时不重复导出。
+
+可用 `--results-file /path/to/results.jsonl` 更换汇总文件。JSONL 每行是一次实验的完整 JSON，便于后续读取比较。原有 `config.json`、`metrics.json`、`best.pth`、`last.pth` 仍按输出目录更新；需要保留每次的模型权重时，请使用不同 `--output-dir`。多个训练进程应使用不同的结果文件。
+
+取消共有类别筛选使用 `--no-common-classes-only`。使用 fake/cifar10 时，未显式指定的类别筛选参数自动关闭；例如 `python train.py --dataset fake --epochs 2` 仍可用于无真实数据验证。
+
 在已安装 PyTorch、torchvision 的环境中，从 `~/TENet/ViTPruning` 运行以下命令。查看全部参数：`python train.py --help`。
 
 ## 数据布局
@@ -44,14 +54,14 @@ python train.py \
 
 如果验证集缺少部分训练类别，简单验证时可在命令中追加 `--common-classes-only`。程序先取 train/val 同名类别的交集并排序，再应用 `--class-start` 和 `--class-count`；例如 `--common-classes-only --class-count 10` 会选前 10 个共有类别，而不是先选训练集前 10 类再删除缺失项。启动时打印共有类别数和排除数量，实际类别映射保存在 `config.json`。若共有类别不足两类则报错。
 
-此选项不会修改数据，也不会把不同名称的类别强行配对。使用它时，数量参数全为 0 表示全部共有类别，不保证覆盖原始 1000 类。正式全量训练前应核实缺失类别的数据及标签；默认不加此选项仍检查所选训练类别是否都有同名验证目录。
+此选项不会修改数据，也不会把不同名称的类别强行配对。使用它时，数量参数全为 0 表示全部共有类别，不保证覆盖原始 1000 类。正式全量训练前应核实缺失类别的数据及标签；使用 `--no-common-classes-only` 检查所选训练类别是否都有同名验证目录。
 
 | 参数 | 含义 | 默认值 |
 | --- | --- | --- |
 | `--class-start` | 文件夹名排序后的起始类别下标，从 0 开始 | 0 |
-| `--class-count` | 从起点开始取多少类；0 表示剩余全部类 | 0 |
-| `--train-per-class` | 每类训练图片上限；0 表示全部 | 0 |
-| `--val-per-class` | 每类验证图片上限；0 表示全部 | 0 |
+| `--class-count` | 从起点开始取多少类；0 表示剩余全部类 | 10 |
+| `--train-per-class` | 每类训练图片上限；0 表示全部 | 100 |
+| `--val-per-class` | 每类验证图片上限；0 表示全部 | 20 |
 | `--seed` | 控制图片抽样及训练随机种子 | 42 |
 
 例如 `--class-start 100 --class-count 50` 选择排序后的第 101～150 类。类别和图片不足时使用实际可用数量，但必须至少选中两类，每类在两个 split 中都要有可读取的图片。所选类别重新编号为 `0..类别数-1`，train/val 使用同一映射。每类图片随机抽样且不重复；保持文件列表和种子一致即可复现子集。程序仅扫描所选类别，仍需枚举这些类别的图片路径，但不会预先把全部图片读入内存。
@@ -64,7 +74,7 @@ python train.py \
 python train.py \
   --dataset imagefolder \
   --data-dir ../../dataset \
-  --class-start 0 --class-count 0 \
+  --no-common-classes-only --class-start 0 --class-count 0 \
   --train-per-class 0 --val-per-class 0 \
   --image-size 224 --patch-size 16 \
   --embed-dim 192 --depth 12 --num-heads 3 \
@@ -74,7 +84,7 @@ python train.py \
   --output-dir checkpoints/full_magnitude
 ```
 
-ImageFolder 训练使用随机裁剪缩放、水平翻转及 ImageNet 归一化；验证使用等比例缩放和中心裁剪。`--no-aug` 让训练也使用验证预处理。默认自动使用可用的 CUDA；`--cpu` 强制 CPU。直接运行 `python train.py` 仍使用 fake 数据；真实数据必须明确指定 `--dataset imagefolder`。
+ImageFolder 训练使用随机裁剪缩放、水平翻转及 ImageNet 归一化；验证使用等比例缩放和中心裁剪。`--no-aug` 让训练也使用验证预处理。默认自动使用可用的 CUDA；`--cpu` 强制 CPU。直接运行 `python train.py` 使用本文开头的真实数据子集默认配置。
 
 比较剪枝方案时，保持数据参数、种子和模型尺寸一致，仅替换 `--pruner` 和输出目录：`identity` 为无剪枝对照，`magnitude` 为范数评分，`linear` 为可学习评分，`tenet_local` 为 TENet 局部图评分。
 

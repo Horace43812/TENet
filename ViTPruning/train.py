@@ -3,6 +3,8 @@
 import argparse
 import json
 import random
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -10,32 +12,38 @@ from torch import nn, optim
 
 from datasets import build_dataloaders
 from model_vit import VisionTransformer
+from results import append_result
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train and evaluate a prunable ViT",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--dataset", choices=["fake", "cifar10", "imagefolder"], default="fake")
+    parser.add_argument("--dataset", choices=["fake", "cifar10", "imagefolder"], default="imagefolder")
     parser.add_argument("--data-dir", default=str(Path(__file__).resolve().parents[2] / "dataset"),
                         help="dataset root containing train/ and val/; unused by fake")
     parser.add_argument("--class-start", type=int, default=0, help="first class index in sorted folder names (imagefolder)")
-    parser.add_argument("--class-count", type=int, default=0, help="number of classes; 0 = all remaining (imagefolder)")
-    parser.add_argument("--common-classes-only", action="store_true",
+    parser.add_argument("--class-count", type=int, default=None, help="number of classes; default: 10 for imagefolder; 0 = all remaining")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--common-classes-only", action="store_true", default=None,
                         help="select class range from sorted train/val intersection (imagefolder)")
-    parser.add_argument("--train-per-class", type=int, default=0, help="training images per class; 0 = all (imagefolder)")
-    parser.add_argument("--val-per-class", type=int, default=0, help="validation images per class; 0 = all (imagefolder)")
-    parser.add_argument("--output-dir", default="./checkpoints")
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--workers", type=int, default=0)
+    selection.add_argument("--no-common-classes-only", dest="common_classes_only", action="store_false", default=None,
+                           help="require selected training classes to exist in val")
+    parser.add_argument("--train-per-class", type=int, default=None, help="training images per class; default: 100 for imagefolder; 0 = all")
+    parser.add_argument("--val-per-class", type=int, default=None, help="validation images per class; default: 20 for imagefolder; 0 = all")
+    parser.add_argument("--output-dir", default="checkpoints/subset_common_magnitude")
+    parser.add_argument("--results-file", default=str(Path(__file__).resolve().parent / "checkpoints" / "training_results.jsonl"),
+                        help="append one JSON record per completed training run")
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--label-smoothing", type=float, default=0.1)
-    parser.add_argument("--image-size", type=int, default=32)
+    parser.add_argument("--image-size", type=int, default=64)
     parser.add_argument("--num-classes", type=int, default=10, help="used by fake; inferred by imagefolder")
     parser.add_argument("--fake-train-size", type=int, default=256)
     parser.add_argument("--fake-eval-size", type=int, default=128)
-    parser.add_argument("--patch-size", type=int, default=4)
+    parser.add_argument("--patch-size", type=int, default=8)
     parser.add_argument("--embed-dim", type=int, default=192)
     parser.add_argument("--depth", type=int, default=12)
     parser.add_argument("--num-heads", type=int, default=3)
@@ -43,12 +51,16 @@ def parse_args():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--pruner", choices=["identity", "magnitude", "linear", "tenet_local"], default="magnitude")
     parser.add_argument("--prune-keep-ratio", type=float, default=0.5)
-    parser.add_argument("--prune-at-block", type=int, default=None)
+    parser.add_argument("--prune-at-block", type=int, default=6)
     parser.add_argument("--resume", default="", help="path to a platform checkpoint")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-aug", action="store_true")
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
+    for name, default in (("class_count", 10), ("train_per_class", 100), ("val_per_class", 20),
+                          ("common_classes_only", True)):
+        if getattr(args, name) is None:
+            setattr(args, name, default if args.dataset == "imagefolder" else 0)
     if min(args.class_start, args.class_count, args.train_per_class, args.val_per_class, args.workers) < 0:
         parser.error("subset limits and workers must be nonnegative")
     if args.dataset != "imagefolder" and any((args.class_start, args.class_count, args.train_per_class,
@@ -98,6 +110,8 @@ def save_json(path: Path, value):
 
 def main():
     args = parse_args()
+    started_at = datetime.now(timezone.utc).isoformat()
+    start_time = time.perf_counter()
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -146,10 +160,11 @@ def main():
     print(f"Device: {device} | parameters: {sum(p.numel() for p in model.parameters()):,} | "
           f"pruner: {args.pruner} after block {model.prune_at_block} | keep: {args.prune_keep_ratio}")
     for epoch in range(start_epoch, args.epochs + 1):
+        epoch_lr = optimizer.param_groups[0]["lr"]
         train_metrics = run_epoch(model, data.train_loader, criterion, device, optimizer)
         eval_metrics = run_epoch(model, data.eval_loader, criterion, device)
         scheduler.step()
-        record = {"epoch": epoch, "lr": optimizer.param_groups[0]["lr"], "train": train_metrics, "eval": eval_metrics}
+        record = {"epoch": epoch, "lr": epoch_lr, "train": train_metrics, "eval": eval_metrics}
         history.append(record)
         checkpoint = {"epoch": epoch, "args": vars(args), "model_config": model_config,
                       "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(),
@@ -164,6 +179,12 @@ def main():
         print(f"Epoch {epoch:03d}/{args.epochs} | train {train_metrics['loss']:.4f} / {train_metrics['accuracy']:.2f}% | "
               f"eval {eval_metrics['loss']:.4f} / {eval_metrics['accuracy']:.2f}% | best {best_accuracy:.2f}%")
     print(f"Artifacts: {best_path}, {last_path}, {metrics_path}")
+    if start_epoch <= args.epochs:
+        append_result(args.results_file, args=vars(args), model_config=model_config, data_config=data_config,
+                      history=history, started_at=started_at, elapsed_seconds=time.perf_counter() - start_time,
+                      device=str(device), parameter_count=sum(p.numel() for p in model.parameters()),
+                      start_epoch=start_epoch)
+        print(f"Results appended: {Path(args.results_file).resolve()}")
 
 
 if __name__ == "__main__":

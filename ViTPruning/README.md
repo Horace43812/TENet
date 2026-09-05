@@ -2,11 +2,11 @@
 
 这是与 TENet 主模型隔离的独立实验子项目。它提供一个纯 PyTorch、无 timm 依赖的标准 pre-LayerNorm Vision Transformer，作为后续 Transformer 剪枝方案的统一平台。
 
-默认配置 `vit_tiny_cifar10` 适配 CIFAR-10：输入 `3x32x32`、patch size `4`（共 64 个 patch）、class token、可学习位置编码、`192` 维 token、`12` 个 Transformer block、`3` 个 attention head 和 `4x` MLP。它约有 5.5M 参数，足够小，适合作为剪枝方案的重复实验平台。
+默认训练配置使用服务器 ImageFolder 的 10 个共有类别：输入 `3x64x64`、patch size `8`（共 64 个 patch）、class token、可学习位置编码、`192` 维 token、`12` 个 Transformer block、`3` 个 attention head 和 `4x` MLP。每类最多 100 张训练图、20 张验证图，训练 50 轮。直接运行 `python train.py` 即可，完整参数见[训练指南](DATASET_TRAINING.md)。
 
 ## 训练
 
-在本目录执行。数据尚未准备时，默认的 `fake` 数据集会生成 RGB 假数据，用于验证从 DataLoader、模型、剪枝接口到训练、验证和保存的完整链路，无需下载数据：
+在本目录执行。数据尚未准备时，显式选择 `fake` 数据集生成 RGB 假数据，用于验证从 DataLoader、模型、剪枝接口到训练、验证和保存的完整链路，无需下载数据：
 
 ```bash
 python train.py --dataset fake --epochs 2 --batch-size 32
@@ -15,10 +15,10 @@ python train.py --dataset fake --epochs 2 --batch-size 32
 接入 CIFAR-10 后：
 
 ```bash
-python train.py --dataset cifar10 --epochs 100 --batch-size 128 --lr 3e-4 --weight-decay 0.05
+python train.py --dataset cifar10 --image-size 32 --patch-size 4 --epochs 100 --batch-size 128 --lr 3e-4 --weight-decay 0.05
 ```
 
-`--embed-dim` 必须能被 `--num-heads` 整除。训练产物默认写入 `checkpoints/`：`best.pth`、`last.pth` 和 `metrics.json`。
+`--embed-dim` 必须能被 `--num-heads` 整除。模型、配置和逐轮指标默认写入 `checkpoints/subset_common_magnitude/`。训练完成后向 `checkpoints/training_results.jsonl` 追加本次配置、汇总指标和逐轮数据，保留已有实验记录；使用 `--results-file` 可指定其他汇总文件。
 
 ### 后续接入真实数据
 
