@@ -44,7 +44,11 @@ class ImageFolderDataflowTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "at least two"):
                 build_dataloaders("imagefolder", root, 16, 2, 0, False, 1000, 8, 4, class_start=4)
             (root / "val" / "extra").mkdir()
-            with self.assertRaisesRegex(ValueError, "identical"):
+            self.assertEqual(build().class_names, ["b", "c"])
+            (root / "val" / "a").rename(root / "val" / "renamed_a")
+            self.assertEqual(build().class_names, ["b", "c"])
+            (root / "val" / "b").rename(root / "val" / "renamed_b")
+            with self.assertRaisesRegex(ValueError, "missing 1 selected training classes:.*b"):
                 build()
 
 

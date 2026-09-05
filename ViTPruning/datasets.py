@@ -71,11 +71,18 @@ def _imagefolder_datasets(root: Path, image_size: int, augment: bool,
         raise FileNotFoundError("ImageFolder needs '<data-dir>/train/<class>/' and '<data-dir>/val/<class>/'")
     classes = sorted(path.name for path in train_root.iterdir() if path.is_dir())
     val_classes = sorted(path.name for path in eval_root.iterdir() if path.is_dir())
-    if classes != val_classes:
-        raise ValueError("ImageFolder train and val splits must have identical class directories")
     classes = classes[class_start:class_start + class_count if class_count else None]
     if len(classes) < 2:
         raise ValueError("Select at least two classes; check --class-start and --class-count")
+    missing = sorted(set(classes) - set(val_classes))
+    if missing:
+        raise ValueError(
+            f"Validation split {eval_root.resolve()} is missing {len(missing)} selected training classes: "
+            f"{missing[:20]}. Validation directory examples: {val_classes[:20]}. "
+            "Expected val/<same-class-name-as-train>/*.JPEG. "
+            "Check the dataset root and class names; flat validation images require their ground-truth labels. "
+            "Classes cannot be matched by directory order."
+        )
     normalization = transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     eval_transform = transforms.Compose([
         transforms.Resize(round(image_size / 0.875)), transforms.CenterCrop(image_size),
