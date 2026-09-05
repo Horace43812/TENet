@@ -20,6 +20,8 @@ def parse_args():
                         help="dataset root containing train/ and val/; unused by fake")
     parser.add_argument("--class-start", type=int, default=0, help="first class index in sorted folder names (imagefolder)")
     parser.add_argument("--class-count", type=int, default=0, help="number of classes; 0 = all remaining (imagefolder)")
+    parser.add_argument("--common-classes-only", action="store_true",
+                        help="select class range from sorted train/val intersection (imagefolder)")
     parser.add_argument("--train-per-class", type=int, default=0, help="training images per class; 0 = all (imagefolder)")
     parser.add_argument("--val-per-class", type=int, default=0, help="validation images per class; 0 = all (imagefolder)")
     parser.add_argument("--output-dir", default="./checkpoints")
@@ -49,7 +51,8 @@ def parse_args():
     args = parser.parse_args()
     if min(args.class_start, args.class_count, args.train_per_class, args.val_per_class, args.workers) < 0:
         parser.error("subset limits and workers must be nonnegative")
-    if args.dataset != "imagefolder" and any((args.class_start, args.class_count, args.train_per_class, args.val_per_class)):
+    if args.dataset != "imagefolder" and any((args.class_start, args.class_count, args.train_per_class,
+                                              args.val_per_class, args.common_classes_only)):
         parser.error("class and per-class selection options require --dataset imagefolder")
     if min(args.epochs, args.batch_size, args.fake_train_size, args.fake_eval_size) <= 0:
         parser.error("epochs, batch-size, and fake dataset sizes must be positive")
@@ -102,7 +105,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     data = build_dataloaders(args.dataset, args.data_dir, args.image_size, args.batch_size, args.workers,
                              not args.no_aug, args.num_classes, args.fake_train_size, args.fake_eval_size,
-                             args.class_start, args.class_count, args.train_per_class, args.val_per_class, args.seed)
+                             args.class_start, args.class_count, args.train_per_class, args.val_per_class, args.seed,
+                             args.common_classes_only)
     data_config = {"dataset": args.dataset, "data_dir": str(Path(args.data_dir).resolve()),
                    "class_names": data.class_names, "class_to_idx": {name: i for i, name in enumerate(data.class_names)},
                    "train_samples": data.train_samples, "val_samples": data.eval_samples,

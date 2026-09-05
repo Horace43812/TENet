@@ -65,12 +65,18 @@ def _limit_per_class(dataset, limit, seed):
 
 def _imagefolder_datasets(root: Path, image_size: int, augment: bool,
                           class_start=0, class_count=0, train_per_class=0,
-                          val_per_class=0, seed=42):
+                          val_per_class=0, seed=42, common_classes_only=False):
     train_root, eval_root = root / "train", root / "val"
     if not train_root.is_dir() or not eval_root.is_dir():
         raise FileNotFoundError("ImageFolder needs '<data-dir>/train/<class>/' and '<data-dir>/val/<class>/'")
     classes = sorted(path.name for path in train_root.iterdir() if path.is_dir())
     val_classes = sorted(path.name for path in eval_root.iterdir() if path.is_dir())
+    if common_classes_only:
+        common = sorted(set(classes) & set(val_classes))
+        print(f"Class selection: train={len(classes)}, val={len(val_classes)}, common={len(common)}; "
+              f"excluded train-only={len(set(classes) - set(val_classes))}, "
+              f"val-only={len(set(val_classes) - set(classes))}")
+        classes = common
     classes = classes[class_start:class_start + class_count if class_count else None]
     if len(classes) < 2:
         raise ValueError("Select at least two classes; check --class-start and --class-count")
@@ -98,7 +104,8 @@ def _imagefolder_datasets(root: Path, image_size: int, augment: bool,
 
 
 def build_dataloaders(name, data_dir, image_size, batch_size, workers, augment, num_classes, fake_train_size, fake_eval_size,
-                      class_start=0, class_count=0, train_per_class=0, val_per_class=0, seed=42):
+                      class_start=0, class_count=0, train_per_class=0, val_per_class=0, seed=42,
+                      common_classes_only=False):
     """Build a registered dataset. ``fake`` validates the pipeline without data."""
     if name == "fake":
         if num_classes <= 1:
@@ -113,7 +120,8 @@ def build_dataloaders(name, data_dir, image_size, batch_size, workers, augment, 
         num_classes = 10
     elif name == "imagefolder":
         train_set, eval_set, num_classes = _imagefolder_datasets(
-            Path(data_dir), image_size, augment, class_start, class_count, train_per_class, val_per_class, seed)
+            Path(data_dir), image_size, augment, class_start, class_count, train_per_class, val_per_class, seed,
+            common_classes_only)
     else:
         raise ValueError(f"Unknown dataset '{name}'. Available: fake, cifar10, imagefolder")
     options = dict(batch_size=batch_size, num_workers=workers, pin_memory=torch.cuda.is_available(),

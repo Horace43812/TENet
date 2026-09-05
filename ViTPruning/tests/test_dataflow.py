@@ -50,6 +50,16 @@ class ImageFolderDataflowTest(unittest.TestCase):
             (root / "val" / "b").rename(root / "val" / "renamed_b")
             with self.assertRaisesRegex(ValueError, "missing 1 selected training classes:.*b"):
                 build()
+            common = build_dataloaders("imagefolder", root, 16, 2, 0, False, 1000, 8, 4,
+                                       class_count=2, train_per_class=3, val_per_class=2,
+                                       common_classes_only=True)
+            self.assertEqual(common.class_names, ["c", "d"])
+            self.assertEqual((common.train_samples, common.eval_samples), (6, 4))
+            self.assertEqual(common.train_loader.dataset.class_to_idx, {"c": 0, "d": 1})
+            self.assertEqual(common.eval_loader.dataset.class_to_idx, {"c": 0, "d": 1})
+            with self.assertRaisesRegex(ValueError, "at least two"):
+                build_dataloaders("imagefolder", root, 16, 2, 0, False, 1000, 8, 4,
+                                  class_start=1, common_classes_only=True)
 
 
 if __name__ == "__main__":
