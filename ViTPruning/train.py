@@ -22,31 +22,31 @@ def parse_args():
     parser.add_argument("--data-dir", default=str(Path(__file__).resolve().parents[2] / "dataset"),
                         help="dataset root containing train/ and val/; unused by fake")
     parser.add_argument("--class-start", type=int, default=0, help="first class index in sorted folder names (imagefolder)")
-    parser.add_argument("--class-count", type=int, default=None, help="number of classes; default: 10 for imagefolder; 0 = all remaining")
+    parser.add_argument("--class-count", type=int, default=None, help="number of classes; default: 20 for imagefolder; 0 = all remaining")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--common-classes-only", action="store_true", default=None,
                         help="select class range from sorted train/val intersection (imagefolder)")
     selection.add_argument("--no-common-classes-only", dest="common_classes_only", action="store_false", default=None,
                            help="require selected training classes to exist in val")
-    parser.add_argument("--train-per-class", type=int, default=None, help="training images per class; default: 100 for imagefolder; 0 = all")
-    parser.add_argument("--val-per-class", type=int, default=None, help="validation images per class; default: 20 for imagefolder; 0 = all")
-    parser.add_argument("--output-dir", default="checkpoints/subset_common_magnitude")
+    parser.add_argument("--train-per-class", type=int, default=None, help="training images per class; default: 500 for imagefolder; 0 = all")
+    parser.add_argument("--val-per-class", type=int, default=None, help="validation images per class; default: all for imagefolder; 0 = all")
+    parser.add_argument("--output-dir", default=None, help="new runs: checkpoints/<pruner>/<timestamp>_seed<seed>; resume: checkpoint directory")
     parser.add_argument("--results-file", default=str(Path(__file__).resolve().parent / "checkpoints" / "training_results.jsonl"),
                         help="append one JSON record per completed training run")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--label-smoothing", type=float, default=0.1)
-    parser.add_argument("--image-size", type=int, default=64)
+    parser.add_argument("--image-size", type=int, default=128)
     parser.add_argument("--num-classes", type=int, default=10, help="used by fake; inferred by imagefolder")
     parser.add_argument("--fake-train-size", type=int, default=256)
     parser.add_argument("--fake-eval-size", type=int, default=128)
-    parser.add_argument("--patch-size", type=int, default=8)
-    parser.add_argument("--embed-dim", type=int, default=192)
+    parser.add_argument("--patch-size", type=int, default=16)
+    parser.add_argument("--embed-dim", type=int, default=256)
     parser.add_argument("--depth", type=int, default=12)
-    parser.add_argument("--num-heads", type=int, default=3)
+    parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--mlp-ratio", type=float, default=4.0)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--pruner", choices=["identity", "magnitude", "linear", "tenet_local"], default="magnitude")
@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument("--no-aug", action="store_true")
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
-    for name, default in (("class_count", 10), ("train_per_class", 100), ("val_per_class", 20),
+    for name, default in (("class_count", 20), ("train_per_class", 500), ("val_per_class", 0),
                           ("common_classes_only", True)):
         if getattr(args, name) is None:
             setattr(args, name, default if args.dataset == "imagefolder" else 0)
@@ -80,6 +80,10 @@ def parse_args():
         parser.error("prune-at-block must be between 1 and depth")
     if args.pruner == "tenet_local" and (args.image_size // args.patch_size) % 2:
         parser.error("tenet_local requires an even patch grid side length")
+    if args.output_dir is None:
+        args.output_dir = str(Path(args.resume).resolve().parent) if args.resume else str(
+            Path(__file__).resolve().parent / "checkpoints" / args.pruner /
+            (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + f"_seed{args.seed}"))
     return args
 
 
@@ -136,6 +140,9 @@ def main():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     output_dir = Path(args.output_dir)
+    if not args.resume and any((output_dir / name).exists() for name in
+                               ("config.json", "metrics.json", "best.pth", "last.pth")):
+        raise FileExistsError(f"Training artifacts already exist in {output_dir}; choose a new --output-dir or --resume")
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path, best_path, last_path = output_dir / "metrics.json", output_dir / "best.pth", output_dir / "last.pth"
     start_epoch, best_accuracy, history = 1, -1.0, []
@@ -157,6 +164,7 @@ def main():
         history = checkpoint.get("history", [])
     save_json(output_dir / "config.json", {"args": vars(args), "model_config": model_config, "data_config": data_config})
     print(f"Dataset: {args.dataset} | train/eval: {data.train_samples}/{data.eval_samples} | classes: {data.num_classes}")
+    print(f"Output directory: {output_dir.resolve()}")
     print(f"Device: {device} | parameters: {sum(p.numel() for p in model.parameters()):,} | "
           f"pruner: {args.pruner} after block {model.prune_at_block} | keep: {args.prune_keep_ratio}")
     for epoch in range(start_epoch, args.epochs + 1):

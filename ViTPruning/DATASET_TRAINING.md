@@ -2,17 +2,38 @@
 
 ## 当前默认配置与结果汇总
 
-直接运行 `python train.py` 使用 ImageFolder：TENet 同级 `dataset`，共有类别中从下标 0 开始选 10 类，每类训练/验证最多 100/20 张；输入 64、patch 8、维度 192、12 层、3 个头；magnitude 在第 6 层后保留 50% token；50 轮、batch 32、workers 4、lr 3e-4、weight decay 0.05、seed 42。默认输出目录为 `checkpoints/subset_common_magnitude`。
+直接运行 `python train.py` 使用 ImageFolder：TENet 同级 `dataset`，共有类别中从下标 0 开始选 20 类，每类训练最多 500 张，验证使用所选类别全部图片（最多 10000 张训练图，验证数量以实际数据为准）；输入 128、patch 16、维度 256、12 层、4 个头；magnitude 在第 6 层后保留 50% token；100 轮、batch 32、workers 4、lr 3e-4、weight decay 0.05、seed 42。初始仍为 64 个 patch token。
 
 每次成功训练完成，自动向 `ViTPruning/checkpoints/training_results.jsonl` **末尾追加**一条 JSON 记录，不覆盖之前的记录。记录依次包含运行 ID 和 UTC 时间、本次完整配置及类别映射、汇总指标、逐轮训练/验证 loss 和准确率及学习率。准确率单位为百分比；耗时为本次程序运行耗时。续训记录包含 checkpoint 中已有的历史，并注明本次起始轮次；没有执行新轮次时不重复导出。
 
-可用 `--results-file /path/to/results.jsonl` 更换汇总文件。JSONL 每行是一次实验的完整 JSON，便于后续读取比较。原有 `config.json`、`metrics.json`、`best.pth`、`last.pth` 仍按输出目录更新；需要保留每次的模型权重时，请使用不同 `--output-dir`。多个训练进程应使用不同的结果文件。
+可用 `--results-file /path/to/results.jsonl` 更换汇总文件。JSONL 每行是一次实验的完整 JSON，便于后续读取比较。默认输出到 `ViTPruning/checkpoints/<pruner>/<UTC时间戳>_seed<seed>/`，每次新训练独立保存。显式 `--output-dir` 指向已有训练产物时拒绝覆盖；续训未指定输出目录时使用 checkpoint 所在目录。多个训练进程应使用不同的结果文件。
 
 取消共有类别筛选使用 `--no-common-classes-only`。使用 fake/cifar10 时，未显式指定的类别筛选参数自动关闭；例如 `python train.py --dataset fake --epochs 2` 仍可用于无真实数据验证。
 
 在已安装 PyTorch、torchvision 的环境中，从 `~/TENet/ViTPruning` 运行以下命令。查看全部参数：`python train.py --help`。
 
-## 数据布局
+## 四方案对比与自动表格
+
+在 `ViTPruning` 目录中依次运行，使用同一组默认数据和模型配置，结果追加到同一个 JSONL，权重自动分目录保存：
+
+```bash
+python train.py --pruner identity
+python train.py --pruner magnitude
+python train.py --pruner linear
+python train.py --pruner tenet_local
+python compare_results.py
+```
+
+`compare_results.py` 仅依赖 Python 标准库。默认读取 `checkpoints/training_results.jsonl` 最后四条非空记录，打印最佳验证准确率及轮次、最终验证准确率、最后 10 轮平均准确率、最终验证 loss 和总耗时；末尾显示运行 ID、种子、样本数、主要配置及权重目录。不同配置或重复方案会提示，少于四条显示已有记录，末尾损坏记录会明确报错而不是跳过。
+
+```bash
+python compare_results.py --output checkpoints/latest_comparison.md
+python compare_results.py --results-file /path/to/training_results.jsonl --last 4
+```
+
+表格按文件末尾顺序展示，不自动挑选四种方法的最好结果。最后 10 轮平均值不是多种子均值，总耗时不是推理延迟。更大模型不保证更高准确率；新配置改变了类别数和训练预算，不能直接把它与旧配置的准确率当作同条件比较。默认模型宽度适度增加，仍从头训练；显存不足可统一将四组 batch size 改为 16。
+
+## 数据目录结构
 
 ```text
 ~/
@@ -59,9 +80,9 @@ python train.py \
 | 参数 | 含义 | 默认值 |
 | --- | --- | --- |
 | `--class-start` | 文件夹名排序后的起始类别下标，从 0 开始 | 0 |
-| `--class-count` | 从起点开始取多少类；0 表示剩余全部类 | 10 |
-| `--train-per-class` | 每类训练图片上限；0 表示全部 | 100 |
-| `--val-per-class` | 每类验证图片上限；0 表示全部 | 20 |
+| `--class-count` | 从起点开始取多少类；0 表示剩余全部类 | 20 |
+| `--train-per-class` | 每类训练图片上限；0 表示全部 | 500 |
+| `--val-per-class` | 每类验证图片上限；0 表示全部 | 0 |
 | `--seed` | 控制图片抽样及训练随机种子 | 42 |
 
 例如 `--class-start 100 --class-count 50` 选择排序后的第 101～150 类。类别和图片不足时使用实际可用数量，但必须至少选中两类，每类在两个 split 中都要有可读取的图片。所选类别重新编号为 `0..类别数-1`，train/val 使用同一映射。每类图片随机抽样且不重复；保持文件列表和种子一致即可复现子集。程序仅扫描所选类别，仍需枚举这些类别的图片路径，但不会预先把全部图片读入内存。

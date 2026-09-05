@@ -2,7 +2,7 @@
 
 这是与 TENet 主模型隔离的独立实验子项目。它提供一个纯 PyTorch、无 timm 依赖的标准 pre-LayerNorm Vision Transformer，作为后续 Transformer 剪枝方案的统一平台。
 
-默认训练配置使用服务器 ImageFolder 的 10 个共有类别：输入 `3x64x64`、patch size `8`（共 64 个 patch）、class token、可学习位置编码、`192` 维 token、`12` 个 Transformer block、`3` 个 attention head 和 `4x` MLP。每类最多 100 张训练图、20 张验证图，训练 50 轮。直接运行 `python train.py` 即可，完整参数见[训练指南](DATASET_TRAINING.md)。
+默认训练配置使用服务器 ImageFolder 的 20 个共有类别：输入 `3x128x128`、patch size `16`（共 64 个 patch）、class token、可学习位置编码、`256` 维 token、`12` 个 Transformer block、`4` 个 attention head 和 `4x` MLP。每类最多 500 张训练图，使用所选类别全部验证图，训练 100 轮。直接运行 `python train.py` 即可，完整参数见[训练指南](DATASET_TRAINING.md)。
 
 ## 训练
 
@@ -18,7 +18,7 @@ python train.py --dataset fake --epochs 2 --batch-size 32
 python train.py --dataset cifar10 --image-size 32 --patch-size 4 --epochs 100 --batch-size 128 --lr 3e-4 --weight-decay 0.05
 ```
 
-`--embed-dim` 必须能被 `--num-heads` 整除。模型、配置和逐轮指标默认写入 `checkpoints/subset_common_magnitude/`。训练完成后向 `checkpoints/training_results.jsonl` 追加本次配置、汇总指标和逐轮数据，保留已有实验记录；使用 `--results-file` 可指定其他汇总文件。
+`--embed-dim` 必须能被 `--num-heads` 整除。模型、配置和逐轮指标默认写入 `checkpoints/<pruner>/<时间戳>_seed<seed>/`。训练完成后向 `checkpoints/training_results.jsonl` 追加本次配置、汇总指标和逐轮数据，保留已有实验记录；使用 `--results-file` 可指定其他汇总文件。
 
 ### 后续接入真实数据
 
