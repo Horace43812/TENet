@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 
 from common import build_data, manifest, load_checkpoint, save_json, seed_all
 from model import TENet
+from checkpoints import resolve_checkpoint
 
 
 STAGES = ["input", "vertices", "nodes", "graph_raw", "graph_normalized", "projected",
@@ -154,7 +155,7 @@ def write_pairs(output, labels, predictions, discovery, confirmation, names, bef
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--checkpoint", help="Checkpoint file, run directory, or latest; default: latest last.pth under runs/")
     p.add_argument("--data-dir", help="optional dataset relocation; relative paths/labels must match saved manifest")
     p.add_argument("--layer", type=int, default=0, help="zero-based graph layer index")
     p.add_argument("--stages", nargs="+", choices=STAGES, default=STAGES)
@@ -170,7 +171,11 @@ def main():
     p.add_argument("--output-dir")
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
-    args.checkpoint = str(Path(args.checkpoint).resolve())
+    try:
+        args.checkpoint = str(resolve_checkpoint(args.checkpoint))
+    except FileNotFoundError as error:
+        p.exit(1, f"Error: {error}\n")
+    print(f"Checkpoint: {args.checkpoint}", flush=True)
     if min(args.grid, args.probe_dim, args.probe_epochs, args.batch_size) < 1 or min(args.workers, args.probe_hidden) < 0:
         p.error("invalid probe sizes")
     if args.probe_lr <= 0 or args.probe_decay < 0:

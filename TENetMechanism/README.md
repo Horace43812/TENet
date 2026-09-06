@@ -75,6 +75,12 @@ python train.py --layers 1 --alpha 8 --resume runs/single_layer/last.pth
 
 ## 层内机制分析
 
+默认训练保存到时间戳目录，`runs/single_layer` 仅在训练时显式指定了该目录才存在。
+不知道具体路径时，直接运行 `python analyze.py --layer 0`：自动使用工作区 `runs/` 下按修改时间最新的 `last.pth`，启动时打印实际路径。
+也可传 `--checkpoint latest`、具体 `.pth` 文件或训练目录（自动取其 `last.pth`）。显式路径错误时列出可用文件，不会悄悄切换实验。自定义输出到 `runs/` 之外的模型需显式指定路径。
+
+训练启动时打印总参数量和可训练参数量，每轮打印学习率、训练/验证 loss 与准确率，结束时打印 `last.pth` 的完整路径。
+
 ```bash
 python analyze.py --checkpoint runs/single_layer/last.pth --layer 0
 

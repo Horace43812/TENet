@@ -86,6 +86,9 @@ def main():
         "head_hidden", "dropout", "readout", "learnable_phi", "trace", "edge", "directed", "cross", "chebyshev", "spatial"]}
     config["num_classes"] = data.num_classes
     model = TENet(**config).to(device)
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    trainable_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    print(f"Device: {device} | Parameters: {parameter_count:,} | Trainable: {trainable_count:,}", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
     output = Path(args.output_dir) if args.output_dir else (Path(args.resume).resolve().parent if args.resume else
@@ -124,7 +127,10 @@ def main():
         if improved:
             torch.save(checkpoint, output / "best.pth")
         save_json(output / "metrics.json", history)
-        print(f"Epoch {epoch}/{args.epochs}: train={train['accuracy']:.2f}% val={val['accuracy']:.2f}% best={best:.2f}%", flush=True)
+        print(f"Epoch {epoch:03d}/{args.epochs} | lr={lr:.3e} | "
+              f"train loss={train['loss']:.4f} acc={train['accuracy']:.2f}% | "
+              f"val loss={val['loss']:.4f} acc={val['accuracy']:.2f}% | best={best:.2f}%", flush=True)
+    print(f"Checkpoint: {(output / 'last.pth').resolve()}", flush=True)
 
 
 if __name__ == "__main__":
