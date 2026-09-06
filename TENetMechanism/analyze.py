@@ -138,7 +138,7 @@ def write_pairs(output, labels, predictions, discovery, confirmation, names, bef
         for i, j in pairs:
             a, b = first[(i, j)], second[(i, j)]
             writer.writerow([names[i], names[j], a["delta_pp"], b["delta_pp"], a["support"],
-                a["before_errors"], a["after_errors"], b["support"], b["before_errors"], b["after_errors"])
+                a["before_errors"], a["after_errors"], b["support"], b["before_errors"], b["after_errors"]])
     discovery_set = set(discovery.tolist())
     with (output / "samples.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
