@@ -133,6 +133,34 @@ python inspect_pair.py --analysis-dir runs/single_layer/analysis/实际目录 \
 
 ## 单点干预
 
+### 集成 A–E 归一化实验
+
+无需重新训练，使用同一个 checkpoint 一次完成五组读取实验：
+
+```bash
+python analyze.py --checkpoint /path/to/last.pth --layer 0 --normalization-study
+# 也可自动使用最近一次训练的 last.pth
+python analyze.py --layer 0 --normalization-study
+```
+
+| 组 | 探针输入（池化和降维之前构造） |
+| --- | --- |
+| A | 原始图矩阵 G |
+| B | (G − μ) / s |
+| C | s × B，补回尺度 |
+| D | B + μ，单独加回偏移，不是完整恢复 |
+| E | s × B + μ，完整恢复检查 |
+
+μ、s 均按原代码逐局部窗口、逐通道计算；s 使用相同的 std 和 1e-6 下限。实验分支仅用于观测，不改变网络前向输出、权重或 BN 统计。每组使用相同的描述符尺寸、固定随机投影、探针初始化种子、训练预算；探针各自在 train 拟合，标准化也只拟合 train。
+
+自动替换 stages 为 A–E，before/after 固定为 A/B。每批原始矩阵上检查 E≈A（rtol=1e-5、atol=1e-5）；失败直接停止。默认单拉普拉斯模式支持，Chebyshev 混合以及同时指定 intervention 时拒绝运行。
+
+除了原有分析文件，还输出 `normalization_report.md`、`normalization_report.json`、`normalization_summary.csv` 和 `normalization_pairs.csv`。报告包括五组准确率、相对 B 的变化、发现/复核子集准确率、恢复误差、A/E 预测一致率，以及固定类别对在五组中的互相误判数。类别对始终按 A→B 在 discovery 上的退化排序，confirmation 不重新选对。
+
+先检查 E/A 恢复误差和预测一致性，再看 C/D 是否改善 B，以及是否改善同一批真实退化类别对。E 只检验实现，不是修复效果的证据；C/D 的改进表示统计量帮助当前读取器，尚不能证明整个网络应采取该修改。重复实验保持 checkpoint 不变，修改 `--probe-seed 124`、`--probe-dim 512` 或 `--grid 8`（不得超过该层输出边长）检查测量敏感性。
+
+### 固定权重分支干预
+
 ```bash
 python analyze.py --checkpoint runs/single_layer/last.pth --layer 0 --intervention no_trace
 python analyze.py --checkpoint runs/single_layer/last.pth --layer 0 --intervention no_cross

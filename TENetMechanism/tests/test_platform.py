@@ -14,6 +14,27 @@ from analyze import Descriptor, split_validation, pair_changes
 
 
 class MechanismTest(unittest.TestCase):
+    def test_normalization_branches(self):
+        model = TENet(2, image_size=8, layers=1, alpha=1, head_grid=1).eval()
+        layer = model.layers[0]
+        for images in [torch.zeros(2, 3, 8, 8), torch.ones(2, 3, 8, 8), torch.randn(2, 3, 8, 8)]:
+            layer.capture_normalization = False
+            with torch.no_grad():
+                baseline = model(images)
+                features = {}
+                layer.observer = lambda name, value: features.update({name: value})
+                layer.capture_normalization = True
+                torch.testing.assert_close(model(images), baseline)
+            raw = features["graph_raw"].reshape(2, 3, 100, 4, 4)
+            mean = raw.mean(2, keepdim=True)
+            scale = raw.std(2, keepdim=True).clamp_min(1e-6)
+            normalized = features["graph_normalized"].reshape_as(raw)
+            torch.testing.assert_close(features["graph_scale_restored"].reshape_as(raw), raw - mean)
+            torch.testing.assert_close(features["graph_mean_restored"].reshape_as(raw), normalized + mean)
+            torch.testing.assert_close(features["graph_restored"].reshape_as(raw), raw, rtol=1e-5, atol=1e-5)
+            torch.testing.assert_close(normalized, (raw - mean) / scale)
+        self.assertTrue(all(row["passed"] for row in layer.reconstruction_checks))
+
     def test_window_layout_and_mean(self):
         x = torch.arange(2 * 3 * 4 * 6).reshape(2, 3, 4, 6).float()
         grouped = group_windows(x)
@@ -81,6 +102,14 @@ class MechanismTest(unittest.TestCase):
             subprocess.run([sys.executable, "inspect_pair.py", "--analysis-dir", str(analysis),
                 "--class-a", "a", "--class-b", "b", "--max-samples", "1"], cwd=workspace, check=True)
             self.assertEqual(len(list(analysis.glob("pair_*/*.png"))), 1)
+            study = root / "normalization"
+            subprocess.run([sys.executable, "analyze.py", "--checkpoint", str(run / "last.pth"),
+                "--output-dir", str(study), "--normalization-study", "--probe-epochs", "1",
+                "--grid", "1", "--probe-dim", "8", "--batch-size", "2", "--cpu"], cwd=workspace, check=True)
+            results = json.loads((study / "normalization_report.json").read_text(encoding="utf-8"))
+            self.assertEqual([row["condition"] for row in results["conditions"]], list("ABCDE"))
+            self.assertTrue(results["reconstruction"]["all_passed"])
+            self.assertTrue((study / "normalization_pairs.csv").exists())
 
 
 if __name__ == "__main__":

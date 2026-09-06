@@ -67,6 +67,8 @@ class GraphifiedLayer(nn.Module):
         self.use_spatial_bridge = use_spatial_bridge
         self.observer = None
         self.intervention = None
+        self.capture_normalization = False
+        self.reconstruction_checks = []
 
         self.register_buffer('L', self._build_laplacian())
         if self.use_directed_flow:
@@ -210,6 +212,21 @@ class GraphifiedLayer(nn.Module):
         if self.intervention == "no_graph_norm":
             g = raw_graph
         observe("graph_normalized", g, True)
+        if self.capture_normalization and self.observer is not None:
+            if self.use_chebyshev or self.intervention is not None:
+                raise ValueError("Normalization experiment requires baseline single-Laplacian mode")
+            # Construct alternatives before descriptor pooling/projection, without modifying forward g.
+            scale_restored = g_std * g
+            mean_restored = g + g_mean
+            restored = scale_restored + g_mean
+            passed = torch.allclose(restored, raw_graph, rtol=1e-5, atol=1e-5)
+            self.reconstruction_checks.append({"max_abs_error": float((restored - raw_graph).abs().max().detach()),
+                "max_abs_raw": float(raw_graph.abs().max().detach()), "passed": passed})
+            if not passed:
+                raise RuntimeError("Full graph reconstruction failed (rtol=1e-5, atol=1e-5); analysis stopped")
+            observe("graph_scale_restored", scale_restored, True)
+            observe("graph_mean_restored", mean_restored, True)
+            observe("graph_restored", restored, True)
 
         trace = (z_sq * self.L_diag).sum(dim=2)
         observe("trace", trace, True)

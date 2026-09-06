@@ -18,6 +18,8 @@ from checkpoints import resolve_checkpoint
 
 STAGES = ["input", "vertices", "nodes", "graph_raw", "graph_normalized", "projected",
           "pre_activation", "output", "content_input", "trace", "content_output"]
+NORMALIZATION_STAGES = ["graph_raw", "graph_normalized", "graph_scale_restored",
+                        "graph_mean_restored", "graph_restored"]
 
 
 class Descriptor:
@@ -156,6 +158,8 @@ def write_pairs(output, labels, predictions, discovery, confirmation, names, bef
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--checkpoint", help="Checkpoint file, run directory, or latest; default: latest last.pth under runs/")
+    p.add_argument("--normalization-study", action="store_true",
+                   help="Run integrated A-E normalization study with reconstruction checks and fixed class-pair comparisons")
     p.add_argument("--data-dir", help="optional dataset relocation; relative paths/labels must match saved manifest")
     p.add_argument("--layer", type=int, default=0, help="zero-based graph layer index")
     p.add_argument("--stages", nargs="+", choices=STAGES, default=STAGES)
@@ -171,6 +175,11 @@ def main():
     p.add_argument("--output-dir")
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
+    if args.normalization_study:
+        if args.intervention != "none":
+            p.error("normalization-study cannot be combined with an intervention")
+        args.stages = NORMALIZATION_STAGES
+        args.before, args.after = "graph_raw", "graph_normalized"
     try:
         args.checkpoint = str(resolve_checkpoint(args.checkpoint))
     except FileNotFoundError as error:
@@ -194,6 +203,10 @@ def main():
     if args.grid > checkpoint["model_config"]["image_size"] // (2 ** (args.layer + 1)):
         p.error("descriptor grid must not exceed the selected layer output spatial size")
     layer = model.layers[args.layer]
+    if args.normalization_study:
+        if layer.use_chebyshev:
+            p.error("normalization-study is only defined for single-Laplacian mode")
+        layer.capture_normalization = True
     if args.intervention == "no_trace" and not layer.use_trace_branch:
         p.error("trace branch already disabled")
     if args.intervention == "no_cross" and not layer.use_cross_stream_guidance:
@@ -235,6 +248,10 @@ def main():
                          "descriptor_dim": args.probe_dim}
     top_pairs = write_pairs(output, labels, predictions, discovery, confirmation, data.class_names,
                             args.before, args.after, samples["val"])
+    if args.normalization_study:
+        from normalization_report import write_normalization_report
+        write_normalization_report(output, metrics, predictions, labels, discovery, confirmation,
+                                   data.class_names, layer.reconstruction_checks)
     intervention_report = None
     if args.intervention != "none":
         layer.intervention = args.intervention
