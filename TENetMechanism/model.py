@@ -5,6 +5,18 @@ from torch import nn
 from graph import GraphifiedLayer
 
 
+def build_model(config):
+    """Old configurations retain their exact architecture; new ones are explicit."""
+    config = dict(config)
+    architecture = config.pop("architecture", "tenet")
+    if architecture == "tenet":
+        return TENet(**config)
+    if architecture == "research":
+        from aggregators import ResearchNet
+        return ResearchNet(**config)
+    raise ValueError(f"Unknown checkpoint architecture: {architecture}")
+
+
 class TENet(nn.Module):
     def __init__(self, num_classes, image_size=64, channels=3, layers=3, alpha=8,
                  head_grid=4, head_hidden=256, dropout=0.1, readout="topology",

@@ -12,7 +12,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from common import build_data, manifest, load_checkpoint, save_json, seed_all
-from model import TENet
+from model import build_model
 from checkpoints import resolve_checkpoint
 
 
@@ -195,7 +195,7 @@ def main():
         p.error("choose distinct before/after stages and do not repeat stages")
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     checkpoint = load_checkpoint(args.checkpoint, "cpu")
-    model = TENet(**checkpoint["model_config"]).to(device)
+    model = build_model(checkpoint["model_config"]).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
     if not 0 <= args.layer < len(model.layers):
@@ -203,7 +203,14 @@ def main():
     if args.grid > checkpoint["model_config"]["image_size"] // (2 ** (args.layer + 1)):
         p.error("descriptor grid must not exceed the selected layer output spatial size")
     layer = model.layers[args.layer]
+    if hasattr(layer, "available_stages") and not args.normalization_study:
+        if args.stages == STAGES:
+            args.stages = list(layer.available_stages)
+        if any(name not in layer.available_stages for name in args.stages):
+            p.error("Selected stage is not available for this aggregation operator")
     if args.normalization_study:
+        if hasattr(layer, "is_graph") and (not layer.is_graph or layer.normalization != "standardized"):
+            p.error("A-E requires a graph operator with standardized normalization")
         if layer.use_chebyshev:
             p.error("normalization-study is only defined for single-Laplacian mode")
         layer.capture_normalization = True

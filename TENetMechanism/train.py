@@ -114,8 +114,10 @@ def main():
     print(f"Output: {output.resolve()} | train/val={data.train_samples}/{data.eval_samples} | classes={data.num_classes}", flush=True)
     for epoch in range(start, args.epochs + 1):
         lr = optimizer.param_groups[0]["lr"]
-        train = evaluate(model, data.train_loader, device, optimizer, args.label_smoothing)
-        val = evaluate(model, data.eval_loader, device, smoothing=args.label_smoothing)
+        train = evaluate(model, data.train_loader, device, optimizer, args.label_smoothing,
+                         progress_desc=f"Epoch {epoch}/{args.epochs} [Train]")
+        val = evaluate(model, data.eval_loader, device, smoothing=args.label_smoothing,
+                       progress_desc=f"Epoch {epoch}/{args.epochs} [Val]")
         scheduler.step()
         history.append({"epoch": epoch, "lr": lr, "train": train, "val": val})
         improved = val["accuracy"] > best

@@ -2,6 +2,23 @@
 
 目的：从真实类别的区分退化出发，定位 TENet 单层图化、矩阵变换、聚合中的候选问题，再研究递归。这里是独立 TENet，不包含 Transformer 或 token 评分剪枝。
 
+当前研究入口：[图化与递归研究计划](../docs/03_graphification_recursion_plan.md) · [实验协议与执行方案](../docs/04_graphification_recursion_protocol.md)。集成平台的日常操作见[实验平台操作手册](EXPERIMENTS.md)，真实数据的研究实验尚待执行。
+
+## 集成实验入口（推荐）
+
+最简操作：在本目录执行 `python experiment.py start --data-dir ../../dataset`。首次自动准备核心实验，之后重复运行自动继续。训练中可另开终端执行 `python experiment.py status`；训练前预检用 `python experiment.py check`。HTML报告每轮更新，运行中自动刷新。
+
+已有PyTorch环境下，在本目录运行：
+
+```text
+python experiment.py doctor
+python experiment.py init --data-dir ../../dataset
+python experiment.py run
+python experiment.py report
+```
+
+无参数运行 `python experiment.py` 可使用中文菜单。初始化生成固定数据划分与16个核心运行；run自动跳过已完成项并恢复中断训练。双击 `experiments/main/report/index.html` 查看进度、结果及CSV，使用 `python experiment.py analyze --models Q,G,GQQ` 做逐层探针和A–E。数据划分、多种子复核、拓扑/递归扩展、预算匹配及最终冻结评估见[完整操作手册](EXPERIMENTS.md)。下文保留原有单次训练和分析入口。
+
 ## 来源与边界
 
 - 图层基于 `../Code/model_common.py`，网络参考 `../Code/model_rgb32.py`。保留 4 顶点＋6 边节点、`diag(z) L diag(z)` 矩阵、图归一化、10×10 投影、trace 和内容流等机制。
@@ -80,6 +97,8 @@ python train.py --layers 1 --alpha 8 --resume runs/single_layer/last.pth
 也可传 `--checkpoint latest`、具体 `.pth` 文件或训练目录（自动取其 `last.pth`）。显式路径错误时列出可用文件，不会悄悄切换实验。自定义输出到 `runs/` 之外的模型需显式指定路径。
 
 训练启动时打印总参数量和可训练参数量，每轮打印学习率、训练/验证 loss 与准确率，结束时打印 `last.pth` 的完整路径。
+
+训练和验证还会显示批次进度条，包括当前epoch、完成批次、累计样本加权平均loss和准确率；集成入口 `experiment.py run/start` 使用相同输出，并显示骨干与分类头的参数量。
 
 ```bash
 python analyze.py --checkpoint runs/single_layer/last.pth --layer 0

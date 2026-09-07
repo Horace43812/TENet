@@ -11,7 +11,7 @@ from torchvision import transforms
 
 from analyze import Descriptor
 from common import load_checkpoint, save_json
-from model import TENet
+from model import build_model
 
 
 def make_probe(state, classes):
@@ -43,7 +43,7 @@ def main():
         p.error("provide two different class names from report.json")
     a, b = names.index(args.class_a), names.index(args.class_b)
     checkpoint = load_checkpoint(config["analysis"]["checkpoint"], "cpu")
-    model = TENet(**checkpoint["model_config"])
+    model = build_model(checkpoint["model_config"])
     model.load_state_dict(checkpoint["model"])
     model.eval()
     for parameter in model.parameters():

@@ -3,6 +3,8 @@
 > **版本**：v0.1，2026-05-24
 > 配套宣言：[01_manifesto.md](01_manifesto.md)
 
+> **历史方案说明（2026-09-06）**：本文保留2026-05-24的研究设想及原始措辞。当前执行以[图化与递归研究计划](03_graphification_recursion_plan.md)和[实验协议](04_graphification_recursion_protocol.md)为准；本文关于CKA、信息保留、低通或硬件收益的表述不作为已验证结论。
+
 ---
 
 ## 0. 总目标

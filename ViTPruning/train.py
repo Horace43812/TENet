@@ -3,12 +3,14 @@
 import argparse
 import json
 import random
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
 from torch import nn, optim
+from tqdm import tqdm
 
 from datasets import build_dataloaders
 from model_vit import VisionTransformer
@@ -87,13 +89,14 @@ def parse_args():
     return args
 
 
-def run_epoch(model, loader, criterion, device, optimizer=None):
+def run_epoch(model, loader, criterion, device, optimizer=None, progress_desc=None):
     training = optimizer is not None
     model.train(training)
     loss_sum = correct = total = 0
     context = torch.enable_grad() if training else torch.no_grad()
-    with context:
-        for images, labels in loader:
+    with context, tqdm(loader, desc=progress_desc, disable=progress_desc is None,
+                       file=sys.stdout, dynamic_ncols=True, mininterval=1.0, unit="batch", ascii=True) as progress:
+        for images, labels in progress:
             images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             if training:
                 optimizer.zero_grad(set_to_none=True)
@@ -105,6 +108,7 @@ def run_epoch(model, loader, criterion, device, optimizer=None):
             loss_sum += loss.item() * labels.size(0)
             correct += (logits.argmax(dim=1) == labels).sum().item()
             total += labels.size(0)
+            progress.set_postfix(loss=f"{loss_sum / total:.4f}", acc=f"{100 * correct / total:.2f}%", refresh=False)
     return {"loss": loss_sum / total, "accuracy": 100.0 * correct / total}
 
 
@@ -166,11 +170,14 @@ def main():
     print(f"Dataset: {args.dataset} | train/eval: {data.train_samples}/{data.eval_samples} | classes: {data.num_classes}")
     print(f"Output directory: {output_dir.resolve()}")
     print(f"Device: {device} | parameters: {sum(p.numel() for p in model.parameters()):,} | "
-          f"pruner: {args.pruner} after block {model.prune_at_block} | keep: {args.prune_keep_ratio}")
+          f"trainable: {sum(p.numel() for p in model.parameters() if p.requires_grad):,} | "
+          f"pruner: {args.pruner} after block {model.prune_at_block} | keep: {args.prune_keep_ratio}", flush=True)
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_lr = optimizer.param_groups[0]["lr"]
-        train_metrics = run_epoch(model, data.train_loader, criterion, device, optimizer)
-        eval_metrics = run_epoch(model, data.eval_loader, criterion, device)
+        train_metrics = run_epoch(model, data.train_loader, criterion, device, optimizer,
+                                  progress_desc=f"Epoch {epoch}/{args.epochs} [Train]")
+        eval_metrics = run_epoch(model, data.eval_loader, criterion, device,
+                                 progress_desc=f"Epoch {epoch}/{args.epochs} [Eval]")
         scheduler.step()
         record = {"epoch": epoch, "lr": epoch_lr, "train": train_metrics, "eval": eval_metrics}
         history.append(record)
@@ -184,8 +191,8 @@ def main():
             best_accuracy = eval_metrics["accuracy"]
             torch.save(checkpoint, best_path)
         save_json(metrics_path, {"args": vars(args), "model_config": model_config, "history": history})
-        print(f"Epoch {epoch:03d}/{args.epochs} | train {train_metrics['loss']:.4f} / {train_metrics['accuracy']:.2f}% | "
-              f"eval {eval_metrics['loss']:.4f} / {eval_metrics['accuracy']:.2f}% | best {best_accuracy:.2f}%")
+        print(f"Epoch {epoch:03d}/{args.epochs} | train loss={train_metrics['loss']:.4f} acc={train_metrics['accuracy']:.2f}% | "
+              f"eval loss={eval_metrics['loss']:.4f} acc={eval_metrics['accuracy']:.2f}% | best {best_accuracy:.2f}%", flush=True)
     print(f"Artifacts: {best_path}, {last_path}, {metrics_path}")
     if start_epoch <= args.epochs:
         append_result(args.results_file, args=vars(args), model_config=model_config, data_config=data_config,
