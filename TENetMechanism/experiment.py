@@ -47,7 +47,7 @@ def initialize(args):
     preview = dict(width=args.width, num_classes=2, image_size=args.image_size,
                    head_grid=args.head_grid, head_hidden=args.head_hidden)
     validate_choices(preview, presets(preview, args.batch), args.models)
-    print("Scanning images, checking duplicates and freezing train/dev/final manifests...", flush=True)
+    print("Scanning images and freezing train/dev/final manifests...", flush=True)
     manifest = prepare_manifest(args.data_dir, args.class_count, args.class_start, args.train_per_class,
         final_unseen=args.final_unseen, groups_file=args.groups_file)
     settings = dict(version=1, protocol="graphification_recursion_v1", data_dir=str(args.data_dir.resolve()),

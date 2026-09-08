@@ -44,7 +44,7 @@ def prepare_manifest(root, class_count=50, class_start=0, train_limit=500, data_
         raise ValueError("Need at least two shared classes")
     # Optional mapping of relative image paths to source/subject groups.
     groups = read_json(groups_file) if groups_file else {}
-    records, seen = {"train": [], "val": []}, {}
+    records = {"train": [], "val": []}
     for split in records:
         for label, name in enumerate(names):
             for path in sorted((root / split / name).rglob("*")):
@@ -54,9 +54,6 @@ def prepare_manifest(root, class_count=50, class_start=0, train_limit=500, data_
                     picture.verify()
                 sha = digest_file(path)
                 relative = path.relative_to(root).as_posix()
-                if sha in seen:
-                    raise ValueError(f"Duplicate image content: {seen[sha]} and {relative}. Deduplicate before init.")
-                seen[sha] = relative
                 records[split].append({"path": relative, "label": label, "sha256": sha,
                                        "group": str(groups.get(relative, relative))})
     final_groups = {r["group"] for r in records["val"]}

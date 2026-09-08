@@ -143,12 +143,18 @@ class ProjectTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_manifest(path)
 
-    def test_duplicates_and_source_group_leak_are_rejected(self):
+    def test_duplicates_are_retained_with_original_labels(self):
         source = self.data / "train/0/0.png"
+        (self.data / "train/1/duplicate.png").write_bytes(source.read_bytes())
         (self.data / "val/0/duplicate.png").write_bytes(source.read_bytes())
-        with self.assertRaisesRegex(ValueError, "Duplicate"):
-            prepare_manifest(self.data)
-        (self.data / "val/0/duplicate.png").unlink()
+        manifest = prepare_manifest(self.data)
+        rows = {r["path"]: r for split in manifest["splits"].values() for r in split}
+        for path, label in (("train/0/0.png", 0), ("train/1/duplicate.png", 1), ("val/0/duplicate.png", 0)):
+            self.assertEqual(rows[path]["label"], label)
+            self.assertEqual(rows[path]["sha256"], rows["train/0/0.png"]["sha256"])
+        verify_files(manifest, self.data, ("train", "dev", "final"))
+
+    def test_source_group_leak_is_rejected(self):
         mapping = self.root / "groups.json"
         atomic_json(mapping, {"train/0/0.png": "same_subject", "val/0/0.png": "same_subject"})
         with self.assertRaisesRegex(ValueError, "Source groups"):
