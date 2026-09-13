@@ -8,6 +8,7 @@ ViTPruning/data/
 ViTPruning/checkpoints/
 TENetMechanism/runs/
 TENetMechanism/experiments/
+MNISTTiny/runs/
 
 # Model checkpoints / weights
 *.pth
