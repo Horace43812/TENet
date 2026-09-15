@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
-from model import TinyMNIST
+from tiny_v1 import TinyMNIST
 
 
 def save_checkpoint(path, value):

@@ -13,11 +13,12 @@ TENet 的结构先验来自局部窗口、顶点—边关联关系和递归组�
 | 目录 | 内容 | 使用场景 |
 | --- | --- | --- |
 | [TENetMechanism/](TENetMechanism/README.md) | 可配置独立 TENet、真实类别探针、层内干预、A–E 归一化实验 | 当前机制研究入口 |
+| [TENetTiny/](TENetTiny/README.md) | current/legacy历史基准、2,429参数紧凑配置、补强与局部归一化开关 | MNIST、Fashion-MNIST、CIFAR、ImageFolder快速模型实验 |
 | [ViTPruning/](ViTPruning/README.md) | 标准 ViT 与 identity / magnitude / linear / tenet_local 对照 | Token 评分剪枝实验 |
 | [Code/](Code/) | MNIST、CIFAR-10、RGB256 模型与早期训练、分析脚本 | 历史实现与实验追溯 |
 | [docs/](docs/00_index.md) | 研究宣言、计划、早期发现与结果归档 | 查阅研究过程及原始证据 |
 
-三个工作区的训练参数、模型实现及 checkpoint 格式不同，应在各自目录运行命令。历史文档中的强主张和阶段结论保留其原始语境，不应直接当作当前已验证结论。
+各工作区的训练参数、模型实现及 checkpoint 格式不同，应在各自目录运行命令。历史文档中的强主张和阶段结论保留其原始语境，不应直接当作当前已验证结论。
 
 当前实验安排见[图化与递归研究计划](docs/03_graphification_recursion_plan.md)和[实验协议](docs/04_graphification_recursion_protocol.md)：先分解图化收益，再比较递归位置与瓶颈，最后验证优势范围；方案包含待实现接口，尚未代表实验结果。
 
