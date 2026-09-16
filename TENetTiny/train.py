@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 
 from data import build_data, dimensions, class_count_hint, EMNIST_CLASSES
 from model import TENetTiny, DEFAULTS
+from cnn import CNN
 from runtime import epoch, write_json, summaries, run_training
 from records import RunRecord, DEFAULT_RECORDS
 
@@ -31,7 +32,9 @@ def parser():
     data.add_argument('--augment', action=argparse.BooleanOptionalAction, default=False)
     data.add_argument('--no-aug', dest='augment', action='store_false', help=argparse.SUPPRESS)
     model = p.add_argument_group('Model: unspecified controls inherit the selected version')
-    model.add_argument('--model-version', choices=tuple(DEFAULTS), default='current')
+    model.add_argument('--model-version', choices=(*DEFAULTS, 'cnn'), default='current')
+    model.add_argument('--cnn-channels', type=int, nargs='+', default=None,
+                       help='CNN channels per Conv-BN-ReLU-Pool stage; default: 24 3')
     model.add_argument('--normalization', '--graph-normalization', choices=('raw', 'centered', 'standardized'))
     model.add_argument('--window-layout', choices=('historical', 'corrected'))
     model.add_argument('--layers', type=int, default=2)
@@ -79,6 +82,10 @@ def parser():
 
 def model_kwargs(args, num_classes):
     channels, size = dimensions(args)
+    if args.model_version == 'cnn':
+        return dict(in_channels=channels, image_size=size, num_classes=num_classes,
+                    channels=args.cnn_channels or [24, 3], head=args.head or 'linear',
+                    head_hidden=args.head_hidden, classifier_dropout=args.classifier_dropout or 0.)
     options = {key: getattr(args, key) for key in DEFAULTS[args.model_version]}
     return dict(model_version=args.model_version, in_channels=channels, image_size=size,
                 num_classes=num_classes, layers=args.layers, alpha=args.alpha, head_hidden=args.head_hidden,
@@ -90,11 +97,18 @@ PREVIOUS_SOURCES = {
     '5c9a19e7e56621f9e9ac6d7e666026056fb9fb8635c73808c0f83fa7cf32cae5',
     '1922892f99b7a6ff97caec4528bf32b66849ff28dca8a6d6297687fd6e0a9530',
 }
+CHARACTER_RELEASE_SOURCES = {
+    'a6bb8dab41a16d8a76c4675f495f8e370543e88be9ad2cb7ec1c6174ecd4dda2',
+    '2109329c3b7c87a737d39c2483dbdfa7f6d9015feb6878114ae0b5a72b7e76c1',
+}
 
 
 def compatible_resume(previous, current):
     if previous == current:
         return True
+    if previous.get('source_sha256') in CHARACTER_RELEASE_SOURCES:
+        migrated = dict(current, source_sha256=previous['source_sha256'])
+        return previous == migrated
     if previous.get('source_sha256') not in PREVIOUS_SOURCES:
         return False
     migrated = dict(current)
@@ -107,6 +121,12 @@ def compatible_resume(previous, current):
 def main(argv=None):
     p = parser()
     args = p.parse_args(argv)
+    if args.model_version == 'cnn':
+        graph_flags = set(DEFAULTS['current']) - {'head', 'classifier_dropout'}
+        if any(getattr(args, key) is not None for key in graph_flags) or args.layers != 2 or args.alpha != 1 or args.trace_lr_mult != 1 or args.trace_init != .1 or args.phi_temp_init != 1. or args.phi_residual_init != .1:
+            p.error('CNN does not use TENet graph controls; remove normalization/window/branch/layers/alpha/trace/phi options')
+    elif args.cnn_channels is not None:
+        p.error('--cnn-channels requires --model-version cnn')
     if min(args.epochs, args.batch_size, args.lr, args.threads, args.trace_lr_mult) <= 0:
         p.error('Epochs, batch size, lr, threads and trace-lr-mult must be positive')
     if min(args.seed, args.split_seed, args.workers, args.weight_decay, args.warmup_epochs, args.class_count, args.train_per_class) < 0:
@@ -119,8 +139,9 @@ def main(argv=None):
     torch.manual_seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
     estimated_classes = class_count_hint(args)
-    preview = TENetTiny(**model_kwargs(args, estimated_classes))
-    if args.batch_size == 1 and dimensions(args)[1] // 2 ** args.layers == 1:
+    model_class = CNN if args.model_version == 'cnn' else TENetTiny
+    preview = model_class(**model_kwargs(args, estimated_classes))
+    if args.model_version != 'cnn' and args.batch_size == 1 and dimensions(args)[1] // 2 ** args.layers == 1:
         p.error('BatchNorm at 1x1 requires batch-size >= 2')
     if args.describe:
         print(json.dumps({'model': model_kwargs(args, estimated_classes), 'resolved': preview.resolved_options,
@@ -130,13 +151,17 @@ def main(argv=None):
     del preview
     config = {k: str(v.resolve()) if isinstance(v, Path) else v for k, v in vars(args).items()
               if k not in ('output_dir', 'records_dir', 'resume', 'workers', 'threads', 'cpu', 'describe')}
+    if args.model_version != 'cnn':
+        config.pop('cnn_channels')
     # Detect accidental architecture/training source edits when resuming new-format runs.
     source_hash = hashlib.sha256()
     for name in ('model.py', 'data.py', 'character_data.py', 'train.py', 'runtime.py', 'records.py', 'tiny_v1.py'):
         source_hash.update(Path(__file__).with_name(name).read_bytes())
+    if args.model_version == 'cnn':
+        source_hash.update(Path(__file__).with_name('cnn.py').read_bytes())
     config['source_sha256'] = source_hash.hexdigest()
     key = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:8]
-    norm = args.normalization or DEFAULTS[args.model_version]['normalization']
+    norm = 'not_applicable' if args.model_version == 'cnn' else args.normalization or DEFAULTS[args.model_version]['normalization']
     out = args.output_dir or Path(__file__).resolve().parent / 'runs' / f'{args.dataset}_{args.model_version}_{norm}_s{args.seed}_{key}'
     checkpoint = None
     if args.resume:
@@ -157,7 +182,7 @@ def execute(args, config, checkpoint, out, norm, device, record):
     kwargs = model_kwargs(args, classes)
     # Data preparation must not change model initialization across augmentation choices.
     torch.manual_seed(args.seed)
-    model = TENetTiny(**kwargs).to(device)
+    model = (CNN if args.model_version == 'cnn' else TENetTiny)(**kwargs).to(device)
     parameters = sum(v.numel() for v in model.parameters())
     main_params, trace_params = [], []
     for name, parameter in model.named_parameters():
@@ -181,7 +206,7 @@ def execute(args, config, checkpoint, out, norm, device, record):
     shuffle = torch.Generator().manual_seed(args.seed)
     # No persistent workers; worker seeds are regenerated from the saved generator each epoch.
     loader = DataLoader(train, batch_size=args.batch_size, shuffle=True, generator=shuffle, num_workers=args.workers,
-                        drop_last=len(train) % args.batch_size == 1 and dimensions(args)[1] // 2 ** args.layers == 1)
+                        drop_last=args.model_version != 'cnn' and len(train) % args.batch_size == 1 and dimensions(args)[1] // 2 ** args.layers == 1)
     evaluation = DataLoader(dev, batch_size=args.batch_size, num_workers=args.workers)
     start = 0
     monitor = split['monitor']

@@ -341,3 +341,44 @@ cat records/training_records.md
 
 可用 `--records-dir /自定义目录` 改变集中存储位置。记录、权重和数据不上传Git，重要实验请备份。
 这次改动作用于TENetTiny入口；Code和TENetMechanism保留各自的旧实验格式。
+
+## 通用 CNN 对照
+
+`--model-version cnn` 支持以上全部数据集，复用同一数据划分、输入预处理、增强、优化器、
+默认50轮、整体进度条、最佳dev权重测试、断点续训和集中训练记录。
+结构为每阶段 `3×3 Conv（无bias）→ BatchNorm → ReLU → 2×2 MaxPool`，最后展平分类。
+默认 `--cnn-channels 24 3 --head linear`，不使用dropout；通道列表长度决定阶段数。
+这是用于匹配当前TENet参数预算的窄CNN，不是调优后的CNN性能上限。
+28×28灰度输入时：10类2,398参数，EMNIST Balanced 47类7,874参数（对应TENet为7,905）。
+RGB、图像大小和类别数会自动影响参数量；ImageFolder沿用train/val[/test]目录格式。
+
+```bash
+# 与当前EMNIST Balanced实验对照：相同默认seed、划分、50轮、Adam和学习率
+python train_datasets.py --dataset emnist --emnist-split balanced --model-version cnn --output-dir runs/emnist_balanced_cnn
+
+python train_datasets.py --dataset mnist --model-version cnn --output-dir runs/mnist_cnn
+python train_datasets.py --dataset fashionmnist --model-version cnn --output-dir runs/fashionmnist_cnn
+python train_datasets.py --dataset kmnist --model-version cnn --output-dir runs/kmnist_cnn
+python train_datasets.py --dataset k49 --model-version cnn --output-dir runs/k49_cnn
+python train_datasets.py --dataset cifar10 --model-version cnn --output-dir runs/cifar10_cnn
+python train_datasets.py --dataset cifar100 --model-version cnn --output-dir runs/cifar100_cnn
+python train_datasets.py --dataset imagefolder --data-dir /path/to/data --model-version cnn --output-dir runs/imagefolder_cnn
+
+# EMNIST其他子集：balanced可替换为letters/digits/byclass/bymerge/mnist
+python train_datasets.py --dataset emnist --emnist-split letters --model-version cnn --output-dir runs/emnist_letters_cnn
+
+# 更宽的常规CNN：提高容量，也增加参数；不再是同参数量对照
+python train_datasets.py --dataset emnist --model-version cnn --cnn-channels 16 32 --output-dir runs/emnist_balanced_cnn_wide
+
+# 无需下载数据，查看参数量
+python train_datasets.py --dataset emnist --model-version cnn --describe
+
+# 中断恢复：保持原命令所有配置，加--resume
+python train_datasets.py --dataset emnist --emnist-split balanced --model-version cnn --output-dir runs/emnist_balanced_cnn --resume
+```
+
+CNN支持 `--head linear/linear-relu/mlp`、`--head-hidden`、`--classifier-dropout` 和通用训练开关。
+TENet专用的局部归一化、窗口布局和补强分支开关不适用于CNN，传入会报错，避免无效配置被误当成实验变量。
+CNN内部BatchNorm与TENet的局部图归一化不同，记录中的图归一化显示 `not_applicable`。
+对照时保持数据集子集、划分、增强、轮次与训练超参数一致；K49比较balanced_accuracy_pct。
+本次更新允许上一版字符数据集训练的TENet checkpoint按原配置恢复；仍拒绝超参数不一致的恢复。
