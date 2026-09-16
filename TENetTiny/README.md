@@ -51,9 +51,9 @@ current/legacy的默认配置对应仓库 `Code/history/model_arch_{current,lega
 以下三条只改归一化和输出目录；其余模型、数据和训练设置相同：
 
 ```bash
-python train.py --dataset mnist --model-version current --head linear --no-directed --normalization standardized --window-layout historical --epochs 100 --seed 42 --output-dir runs/mnist_2429_std_s42
-python train.py --dataset mnist --model-version current --head linear --no-directed --normalization raw --window-layout historical --epochs 100 --seed 42 --output-dir runs/mnist_2429_raw_s42
-python train.py --dataset mnist --model-version current --head linear --no-directed --normalization centered --window-layout historical --epochs 100 --seed 42 --output-dir runs/mnist_2429_centered_s42
+python train.py --dataset mnist --model-version current --head linear --no-directed --normalization standardized --window-layout historical --epochs 50 --seed 42 --output-dir runs/mnist_2429_std_s42
+python train.py --dataset mnist --model-version current --head linear --no-directed --normalization raw --window-layout historical --epochs 50 --seed 42 --output-dir runs/mnist_2429_raw_s42
+python train.py --dataset mnist --model-version current --head linear --no-directed --normalization centered --window-layout historical --epochs 50 --seed 42 --output-dir runs/mnist_2429_centered_s42
 ```
 
 ### 历史current、legacy默认结构及raw版本
@@ -162,6 +162,56 @@ python train_datasets.py --dataset imagefolder --data-dir ../../dataset --class-
 官方数据集下载/复用目录默认 `../Code/data`，用 `--data-dir /实际路径` 改动。
 彩色输入/类别数/分辨率改变后，参数量会变化，不再都是2,429；启动时打印实际参数量和完整解析后的开关。
 
+### 新增字符与笔画数据集
+
+| 选项 | 类别 | 官方总图片数（训练＋测试） | 用途 |
+| --- | ---: | ---: | --- |
+| `--dataset emnist --emnist-split balanced` | 47 | 131,600 | 数字＋英文字符的均衡对照，建议先跑 |
+| `--dataset emnist --emnist-split byclass` | 62 | 814,255 | 更大规模、区分大小写的字符分类 |
+| `--dataset emnist --emnist-split letters` | 26 | 145,600 | 只识别字母，大小写合并 |
+| `--dataset emnist --emnist-split digits` | 10 | 280,000 | 更大规模的手写数字 |
+| `--dataset k49` | 49 | 270,912 | 日文草书笔画/形状，类别不均衡 |
+| `--dataset kmnist` | 10 | 70,000 | 日文草书的快速对照，规模与MNIST相同 |
+
+EMNIST还支持 `--emnist-split bymerge`（47类、814,255张）和 `mnist`。
+来源：[NIST EMNIST说明](https://www.nist.gov/itl/products-and-services/emnist-dataset)、
+[CODH Kuzushiji官方仓库](https://github.com/rois-codh/kmnist)。
+KMNIST/K49归属CODH，源自NIJL等机构的Kuzushiji Dataset，采用CC BY-SA 4.0许可；
+研究引用见官方仓库与论文 *Deep Learning for Classical Japanese Literature*。
+
+这些数据集均为28×28单通道，沿用已有模型/补强/归一化开关，类别数改变时分类头自动适配。
+它们是字符分类任务，不是像素级边缘检测任务；适合检验笔画与形状，但MNIST优于Fashion-MNIST不能单独证明边缘优势。
+
+```bash
+# 均衡数字＋字母；省略epochs就是50轮
+python train_datasets.py --dataset emnist --emnist-split balanced --model-version current --head linear --no-directed --normalization raw --window-layout corrected --output-dir runs/emnist_balanced_raw
+
+# 62类、更大规模
+python train_datasets.py --dataset emnist --emnist-split byclass --model-version current --head linear --no-directed --normalization raw --window-layout corrected --output-dir runs/emnist_byclass_raw
+
+# 26类字母
+python train_datasets.py --dataset emnist --emnist-split letters --model-version current --head linear --no-directed --normalization raw --window-layout corrected --output-dir runs/emnist_letters_raw
+
+# 28万张手写数字
+python train_datasets.py --dataset emnist --emnist-split digits --model-version current --head linear --no-directed --normalization raw --window-layout corrected --output-dir runs/emnist_digits_raw
+
+# 49类草书；自动以平衡准确率选择最佳模型
+python train_datasets.py --dataset k49 --model-version current --head linear --no-directed --normalization raw --window-layout corrected --output-dir runs/k49_raw
+
+# 10类草书，较快的对照
+python train_datasets.py --dataset kmnist --model-version current --head linear --no-directed --normalization raw --window-layout corrected --output-dir runs/kmnist_raw
+```
+
+EMNIST自动将IDX图片转置到正常字符方向；letters标签从1–26映射为0–25。
+新字符数据集输入使用固定 `(像素/255 - 0.5)/0.5`，不从测试集估计统计量。
+EMNIST/K49默认每类留约10%且最多500张dev，以适应稀少类别；可用 `--dev-per-class` 显式覆盖。
+KMNIST默认55,000训练/5,000开发/10,000测试。训练种子不会改变划分。
+
+K49按官方协议额外报告平衡准确率（逐类召回率的平均值），避免大类掩盖小类表现。
+`--selection-metric auto` 默认在K49选择 `balanced_accuracy_pct`，其他数据集选择 `accuracy_pct`；
+也可显式指定其中之一。普通准确率与平衡准确率同时保存在最佳轮及测试结果中。
+EMNIST ByClass同样不均衡，需要按类别平均选型时可加 `--selection-metric balanced_accuracy_pct`。
+
 ImageFolder数据布局：
 
 ```text
@@ -181,12 +231,17 @@ train/val/test的类别目录集合必须一致；val作为开发集，可选tes
 
 ## 5. 训练配置、数据划分与成绩口径
 
-默认100轮，batch128，Adam，lr=0.001，余弦衰减到初始lr的0.1倍，weight-decay=0、
+默认50轮，batch128，Adam，lr=0.001，余弦衰减到初始lr的0.1倍，weight-decay=0、
 label-smoothing=0、无增强、训练seed42、workers0。这些是统一的新训练默认值，不代表96.95%旧实验的已核实配方。
+
+`train.py`、`train_datasets.py`、旧格式 `train_v1.py` 的默认轮数均为50。
+终端只显示一条覆盖全部轮次的总进度条，统计所有训练批次、每轮评估批次和末尾测试批次，
+显示当前轮次/阶段、整体百分比、当前loss/准确率和剩余时间；每轮不会重置到0。
+续训按已完成轮数恢复总进度，不再逐轮打印指标行。
 
 | 参数 | 作用 |
 | --- | --- |
-| `--epochs 100 --batch-size 128` | 总训练轮数与批量 |
+| `--epochs 50 --batch-size 128` | 总训练轮数与批量 |
 | `--lr 0.001 --optimizer adam` | 优化器；也可选adamw |
 | `--scheduler none/cosine/warmup-cosine` | 固定学习率、余弦、预热余弦 |
 | `--warmup-epochs 3 --min-lr-ratio 0.1` | 预热长度与余弦下限比例 |
@@ -198,7 +253,7 @@ label-smoothing=0、无增强、训练seed42、workers0。这些是统一的新�
 
 默认 `--eval-protocol dev-test`：
 
-- MNIST/Fashion-MNIST：官方60,000张训练图中固定每类500张dev，得到55,000训练/5,000开发；官方10,000张test仅最后评估last。
+- MNIST/Fashion-MNIST：官方60,000张训练图中固定每类500张dev，得到55,000训练/5,000开发；官方10,000张test仅最后评估开发集选择的best。
 - CIFAR-10：45,000训练/5,000开发/10,000测试。
 - CIFAR-100：每类50张dev，同样45,000训练/5,000开发/10,000测试。
 - 使用 `--dev-per-class` 调整官方数据集dev数量；训练种子不改变图片划分。
@@ -212,23 +267,28 @@ python train.py --dataset mnist --model-version current --head linear --no-direc
 ```
 
 此时不留dev，默认使用全部60,000张MNIST训练图；每轮指标明确标记 `test_monitored`，
-结果包含 `best_monitor_pct`、`best_epoch` 和last的test成绩，便于记录“准确率(轮次)”。
-它不再是未查看的测试集。不要把该协议的best成绩直接与dev-test协议的last成绩混比。
+结果包含 `best_monitor_pct`、`best_epoch` 和best的test成绩，便于记录“准确率(轮次)”。
+它不再是未查看的测试集，与开发集选型后再评估test的协议不同，比较时必须标明。
 历史MNIST测试集已经被查看，任何模式都不能将其重新声明为全新独立最终集。
 
 ## 6. 保存、续训与旧MNISTTiny结果
 
-每个输出目录保存 `config.json`（完整解析后的模型设置）、`split.json`、`metrics.json`、
-`best.pth`、`last.pth`、`result.json`。best按监控集准确率选，结果同时显示最佳轮；默认最终test评估last。
+每个输出目录保存 `config.json`（完整解析后的模型设置）、`split.json`、`summary.json`、
+`best.pth`、`last.pth`、`result.json`。summary只保留最佳轮摘要；不再生成逐轮metrics.json，
+checkpoint也只保留最佳轮/最后轮摘要以便续训，不累积每轮历史。旧metrics.json保留原文件，不再追加。
+best按监控指标选择，训练结束只评估best.pth；result明确记录checkpoint与最佳轮。
+旧版本已存在的result不会重算，保留它原来的last/best标签，汇总也如实显示。
 
 中断后保留原命令所有模型/训练参数，加 `--resume`：
 
 ```bash
-python train.py --dataset mnist --model-version current --head linear --no-directed --normalization raw --window-layout historical --epochs 100 --seed 42 --output-dir runs/mnist_2429_raw_s42 --resume
+python train.py --dataset mnist --model-version current --head linear --no-directed --normalization raw --window-layout historical --epochs 50 --seed 42 --output-dir runs/mnist_2429_raw_s42 --resume
 ```
 
 恢复最近完整epoch，包含优化器、scheduler、torch/Python/NumPy及数据打乱随机状态。
-代码、模型、训练配置或数据清单变化会拒绝新格式续跑；新实验换输出目录。
+本次支持从上一版b9a6659的checkpoint迁移续训：显式指定原 `--output-dir` 和原 `--epochs`（若为100则仍传100），
+模型和训练设置保持原样，旧history会压缩为最佳/最后摘要。其他未经匹配的源码修改仍拒绝续训。
+默认输出路径包含源码指纹，更新后续训必须指定原目录；新实验可省略输出目录自动生成。
 允许调整workers/threads/CPU选择，但跨设备或改变并行方式不承诺逐位复现。
 
 Git不会自动搬迁服务器上被忽略的旧 `MNISTTiny/runs/`。旧结果留在原处即可；
@@ -252,5 +312,32 @@ python train_datasets.py --dataset cifar10 --model-version current --normalizati
 ```
 
 合成数据仅验证运行，不代表真实准确率。测试覆盖历史快照权重/输出一致、2,429参数配置、
-三种归一化、多通道排列、所有版本的每个补强开关、五类数据集流程、实际ImageFolder加载、
+三种归一化、多通道排列、所有版本的每个补强开关、八类数据集流程、实际ImageFolder加载、
 固定划分及中断恢复与连续训练一致性。
+
+## 8. 集中训练记录：每个实验一条
+
+TENetTiny的三个训练入口自动写入同一个记录目录，与启动时的工作目录无关：
+
+```text
+TENetTiny/records/
+  training_records.md       # 直接查看的汇总表，每个实验一行
+  training_records.json     # 完整配置与最佳表现，方便后续读取
+  training_records.sqlite3  # 并发写入的底层存储
+```
+
+每条包括：数据集及EMNIST子集、版本、全部训练配置、解析后的补强开关、模型参数量、
+最佳监控成绩与轮次、该轮训练/验证摘要、最终测试成绩及其checkpoint、运行状态、时间和输出路径。
+只有最佳表现摘要，不记录逐轮指标列表。dev与test_monitored、普通准确率与平衡准确率明确区分。
+
+新输出目录增加一条；同目录 `--resume` 更新原条目，不重复添加。
+训练时每完成一轮更新同一条最佳摘要；Ctrl+C记为interrupted，异常记为failed，完成记为complete。
+强制结束/断电可能留下running状态，但已保存的最佳摘要仍在。记录文件支持不同输出目录的并发训练。
+历史已完成实验不会自动扫描导入；若按原参数续跑已完成目录，可在验证checkpoint后补登记已有结果。
+
+```bash
+cat records/training_records.md
+```
+
+可用 `--records-dir /自定义目录` 改变集中存储位置。记录、权重和数据不上传Git，重要实验请备份。
+这次改动作用于TENetTiny入口；Code和TENetMechanism保留各自的旧实验格式。

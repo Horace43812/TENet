@@ -1,8 +1,10 @@
 """MNIST/FashionMNIST/CIFAR and train/val[/test] ImageFolder loading."""
 from pathlib import Path
+import copy
 import torch
 from torch.utils.data import Subset
 from torchvision import datasets, transforms
+from character_data import Kuzushiji49, UprightEMNIST
 
 
 SPECS = {
@@ -10,7 +12,18 @@ SPECS = {
     'fashionmnist': (datasets.FashionMNIST, 1, 28, (.2860,), (.3530,), 500),
     'cifar10': (datasets.CIFAR10, 3, 32, (.4914, .4822, .4465), (.2470, .2435, .2616), 500),
     'cifar100': (datasets.CIFAR100, 3, 32, (.5071, .4867, .4408), (.2675, .2565, .2761), 50),
+    # Fixed .5/.5 input scaling for new character datasets; no test-derived statistics.
+    'emnist': (datasets.EMNIST, 1, 28, (.5,), (.5,), 500),
+    'kmnist': (datasets.KMNIST, 1, 28, (.5,), (.5,), 500),
+    'k49': (Kuzushiji49, 1, 28, (.5,), (.5,), 500),
 }
+
+EMNIST_CLASSES = dict(byclass=62, bymerge=47, balanced=47, letters=26, digits=10, mnist=10)
+
+
+def class_count_hint(args):
+    return args.class_count or (EMNIST_CLASSES[args.emnist_split] if args.dataset == 'emnist'
+                               else {'cifar100': 100, 'k49': 49}.get(args.dataset, 10))
 
 
 def dimensions(args):
@@ -38,10 +51,13 @@ def build_data(args):
         else:
             augmentation += [transforms.RandomCrop(size, padding=4), transforms.RandomHorizontalFlip()]
     training = transforms.Compose(augmentation + normalize) if args.augment else evaluation
+    if args.dataset == 'emnist':
+        training = transforms.Compose([UprightEMNIST(), training])
+        evaluation = transforms.Compose([UprightEMNIST(), evaluation])
     generator = torch.Generator().manual_seed(args.split_seed)
     monitor = 'dev' if args.eval_protocol == 'dev-test' else 'test_monitored'
     if args.smoke:
-        count = args.class_count or (100 if args.dataset == 'cifar100' else 10)
+        count = class_count_hint(args)
         train = datasets.FakeData(32, (channels, size, size), count, training, random_offset=0)
         dev = datasets.FakeData(16, (channels, size, size), count, evaluation, random_offset=100)
         test = datasets.FakeData(16, (channels, size, size), count, evaluation, random_offset=200)
@@ -72,9 +88,16 @@ def build_data(args):
                     'test': records(test_source, test_ids) if test_source else []}
         return Subset(train_source, train_ids), Subset(dev_source, dev_ids), Subset(test_source, test_ids) if test_source else None, count, manifest
     dataset, _, _, _, _, default_dev = SPECS[args.dataset]
-    source = dataset(args.data_dir, train=True, download=True, transform=training)
-    evaluation_source = dataset(args.data_dir, train=True, download=False, transform=evaluation)
-    test_source = dataset(args.data_dir, train=False, download=True, transform=evaluation)
+    extra = {'split': args.emnist_split} if args.dataset == 'emnist' else {}
+    source = dataset(args.data_dir, train=True, download=True, transform=training, **extra)
+    test_source = dataset(args.data_dir, train=False, download=True, transform=evaluation, **extra)
+    if args.dataset == 'emnist' and args.emnist_split == 'letters':
+        # Torchvision letters has labels 1..26 and a placeholder class at index zero.
+        for item in (source, test_source):
+            item.targets = torch.as_tensor(item.targets).long() - 1
+            item.classes = item.classes[1:]
+    evaluation_source = copy.copy(source)
+    evaluation_source.transform = evaluation
     count = args.class_count or len(source.classes)
     if not 2 <= count <= len(source.classes):
         raise ValueError('Invalid class-count')
@@ -88,10 +111,13 @@ def build_data(args):
     for label in range(count):
         ids = (targets == label).nonzero().flatten()
         ids = ids[torch.randperm(len(ids), generator=generator)].tolist()
-        if dev_count >= len(ids):
+        holdout = dev_count
+        if args.dataset in ('emnist', 'k49') and args.dev_per_class is None and dev_count:
+            holdout = min(default_dev, max(1, round(len(ids) * .1)))
+        if holdout >= len(ids):
             raise ValueError('dev-per-class leaves no training data')
-        dev_ids.extend(ids[:dev_count])
-        train_ids.extend(ids[dev_count:][:args.train_per_class or None])
+        dev_ids.extend(ids[:holdout])
+        train_ids.extend(ids[holdout:][:args.train_per_class or None])
     test_ids = [i for i, y in enumerate(test_source.targets) if int(y) < count]
     test = Subset(test_source, test_ids)
     manifest = {'classes': source.classes[:count], 'monitor': monitor, 'split_seed': args.split_seed,

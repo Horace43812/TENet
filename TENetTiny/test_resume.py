@@ -12,7 +12,7 @@ class ResumeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def run(name, resume=False):
-                argv = ["train.py", "--smoke", "--cpu", "--epochs", "2", "--output-dir", str(root / name)]
+                argv = ["train.py", "--smoke", "--cpu", "--epochs", "2", "--output-dir", str(root / name), '--records-dir', str(root / 'records')]
                 with patch("sys.argv", argv + (["--resume"] if resume else [])):
                     train.main()
             run("continuous")
@@ -33,9 +33,9 @@ class ResumeTests(unittest.TestCase):
             self.assertEqual(resumed["epoch"], 2)
             for name, value in continuous["model"].items():
                 torch.testing.assert_close(value, resumed["model"][name], rtol=0, atol=0)
-            for a, b in zip(continuous["history"], resumed["history"]):
-                self.assertEqual(a["train"], b["train"])
-                self.assertEqual(a["dev"], b["dev"])
+            self.assertEqual(continuous['best_summary'], resumed['best_summary'])
+            self.assertEqual(continuous['last_summary'], resumed['last_summary'])
+            self.assertNotIn('history', resumed)
 
 
 if __name__ == "__main__":

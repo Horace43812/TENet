@@ -5,22 +5,22 @@ import json
 import math
 from pathlib import Path
 import random
-import time
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from data import build_data, dimensions
+from data import build_data, dimensions, class_count_hint, EMNIST_CLASSES
 from model import TENetTiny, DEFAULTS
-from train_v1 import save_checkpoint, write_json
-from tqdm import tqdm
+from runtime import epoch, write_json, summaries, run_training
+from records import RunRecord, DEFAULT_RECORDS
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     data = p.add_argument_group('Dataset and fixed split')
-    data.add_argument('--dataset', choices=('mnist', 'fashionmnist', 'cifar10', 'cifar100', 'imagefolder'), default='mnist')
+    data.add_argument('--dataset', choices=('mnist', 'fashionmnist', 'emnist', 'kmnist', 'k49', 'cifar10', 'cifar100', 'imagefolder'), default='mnist')
+    data.add_argument('--emnist-split', choices=tuple(EMNIST_CLASSES), default='balanced')
     data.add_argument('--data-dir', type=Path, default=Path(__file__).resolve().parents[1] / 'Code/data')
     data.add_argument('--image-size', type=int, help='Default: 28 for grayscale, 32 for CIFAR, 64 for ImageFolder')
     data.add_argument('--class-count', type=int, default=0, help='0=all; otherwise first N classes')
@@ -54,7 +54,7 @@ def parser():
     model.add_argument('--phi-temp-init', type=float, default=1.)
     model.add_argument('--phi-residual-init', type=float, default=.1)
     training = p.add_argument_group('Training and checkpoints')
-    training.add_argument('--epochs', type=int, default=100)
+    training.add_argument('--epochs', type=int, default=50)
     training.add_argument('--batch-size', type=int, default=128)
     training.add_argument('--lr', type=float, default=1e-3)
     training.add_argument('--optimizer', choices=('adam', 'adamw'), default='adam')
@@ -69,6 +69,8 @@ def parser():
     training.add_argument('--threads', type=int, default=4)
     training.add_argument('--cpu', action='store_true')
     training.add_argument('--output-dir', type=Path)
+    training.add_argument('--records-dir', type=Path, default=DEFAULT_RECORDS)
+    training.add_argument('--selection-metric', choices=('auto', 'accuracy_pct', 'balanced_accuracy_pct'), default='auto', help='auto uses balanced accuracy for k49, Top-1 elsewhere')
     training.add_argument('--resume', action='store_true')
     training.add_argument('--smoke', action='store_true', help='Synthetic images; no dataset download')
     training.add_argument('--describe', action='store_true', help='Print resolved model and parameter budget, no dataset access')
@@ -84,29 +86,22 @@ def model_kwargs(args, num_classes):
                 phi_residual_init=args.phi_residual_init, **options)
 
 
-def epoch(model, loader, device, optimizer=None, smoothing=0.):
-    model.train(optimizer is not None)
-    loss_sum = correct = count = 0
-    with torch.set_grad_enabled(optimizer is not None):
-        progress = tqdm(loader, desc='train' if optimizer is not None else 'eval')
-        for images, labels in progress:
-            images, labels = images.to(device), labels.to(device)
-            if optimizer is not None:
-                optimizer.zero_grad(set_to_none=True)
-            output = model(images)
-            loss = torch.nn.functional.cross_entropy(output, labels, label_smoothing=smoothing)
-            if not torch.isfinite(loss):
-                raise RuntimeError('Non-finite loss; last complete epoch remains saved')
-            if optimizer is not None:
-                loss.backward()
-                if not torch.stack([torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None]).all():
-                    raise RuntimeError('Non-finite gradient; last complete epoch remains saved')
-                optimizer.step()
-            count += len(labels)
-            loss_sum += loss.item() * len(labels)
-            correct += (output.argmax(1) == labels).sum().item()
-            progress.set_postfix(loss=loss_sum / count, acc=f'{100 * correct / count:.2f}%')
-    return dict(loss=loss_sum / count, accuracy_pct=100 * correct / count, samples=count)
+PREVIOUS_SOURCES = {
+    '5c9a19e7e56621f9e9ac6d7e666026056fb9fb8635c73808c0f83fa7cf32cae5',
+    '1922892f99b7a6ff97caec4528bf32b66849ff28dca8a6d6297687fd6e0a9530',
+}
+
+
+def compatible_resume(previous, current):
+    if previous == current:
+        return True
+    if previous.get('source_sha256') not in PREVIOUS_SOURCES:
+        return False
+    migrated = dict(current)
+    if migrated.pop('emnist_split') != 'balanced' or migrated.pop('selection_metric') != 'auto':
+        return False
+    migrated['source_sha256'] = previous['source_sha256']
+    return previous == migrated
 
 
 def main(argv=None):
@@ -123,7 +118,7 @@ def main(argv=None):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
-    estimated_classes = args.class_count or (100 if args.dataset == 'cifar100' else 10)
+    estimated_classes = class_count_hint(args)
     preview = TENetTiny(**model_kwargs(args, estimated_classes))
     if args.batch_size == 1 and dimensions(args)[1] // 2 ** args.layers == 1:
         p.error('BatchNorm at 1x1 requires batch-size >= 2')
@@ -134,10 +129,10 @@ def main(argv=None):
         return
     del preview
     config = {k: str(v.resolve()) if isinstance(v, Path) else v for k, v in vars(args).items()
-              if k not in ('output_dir', 'resume', 'workers', 'threads', 'cpu', 'describe')}
+              if k not in ('output_dir', 'records_dir', 'resume', 'workers', 'threads', 'cpu', 'describe')}
     # Detect accidental architecture/training source edits when resuming new-format runs.
     source_hash = hashlib.sha256()
-    for name in ('model.py', 'data.py', 'train.py', 'train_v1.py', 'tiny_v1.py'):
+    for name in ('model.py', 'data.py', 'character_data.py', 'train.py', 'runtime.py', 'records.py', 'tiny_v1.py'):
         source_hash.update(Path(__file__).with_name(name).read_bytes())
     config['source_sha256'] = source_hash.hexdigest()
     key = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:8]
@@ -146,13 +141,18 @@ def main(argv=None):
     checkpoint = None
     if args.resume:
         checkpoint = torch.load(out / 'last.pth', map_location='cpu', weights_only=False)
-        if checkpoint['config'] != config:
-            p.error('Resume requires original configuration and code; v1 runs use train_v1.py')
+        if not compatible_resume(checkpoint['config'], config):
+            p.error('Resume requires original configuration and code; specify the original --epochs and --output-dir')
     elif out.exists() and any(out.iterdir()):
         p.error('Output is not empty; use --resume or a new --output-dir')
+    with RunRecord(args.records_dir, out, config) as record:
+        execute(args, config, checkpoint, out, norm, device, record)
+
+
+def execute(args, config, checkpoint, out, norm, device, record):
     train, dev, test, classes, split = build_data(args)
     if checkpoint and checkpoint['split'] != split:
-        p.error('Dataset paths, labels or split changed')
+        raise ValueError('Dataset paths, labels or split changed')
     out.mkdir(parents=True, exist_ok=True)
     kwargs = model_kwargs(args, classes)
     # Data preparation must not change model initialization across augmentation choices.
@@ -183,12 +183,14 @@ def main(argv=None):
     loader = DataLoader(train, batch_size=args.batch_size, shuffle=True, generator=shuffle, num_workers=args.workers,
                         drop_last=len(train) % args.batch_size == 1 and dimensions(args)[1] // 2 ** args.layers == 1)
     evaluation = DataLoader(dev, batch_size=args.batch_size, num_workers=args.workers)
-    history, start, best = [], 0, -1.
+    start = 0
+    monitor = split['monitor']
+    best_summary, last_summary = summaries(checkpoint, monitor)
     if checkpoint:
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
-        history, start, best = checkpoint['history'], checkpoint['epoch'], checkpoint['best_monitor']
+        start = checkpoint['epoch']
         random.setstate(checkpoint['python_rng'])
         np.random.set_state(checkpoint['numpy_rng'])
         torch.set_rng_state(checkpoint['rng'])
@@ -201,34 +203,18 @@ def main(argv=None):
     print(f'Device: {device} | Model: {args.model_version} | Parameters: {parameters:,} | Graph norm: {norm}', flush=True)
     print(f'Options: {model.resolved_options}', flush=True)
     print(f'Output: {out.resolve()} | train/{monitor}/test: {len(train)}/{len(dev)}/{len(test) if test is not None else 0}', flush=True)
-    for index in range(start, args.epochs):
-        begin = time.perf_counter()
-        training = epoch(model, loader, device, optimizer, args.label_smoothing)
-        validation = epoch(model, evaluation, device)
-        history.append({'epoch': index + 1, 'lr': optimizer.param_groups[0]['lr'], 'train': training,
-                        monitor: validation, 'seconds': time.perf_counter() - begin})
-        improved = validation['accuracy_pct'] > best
-        best = max(best, validation['accuracy_pct'])
-        scheduler.step()
-        state = {'config': config, 'model_kwargs': kwargs, 'split': split, 'model': model.state_dict(),
-                 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'epoch': index + 1,
-                 'history': history, 'best_monitor': best, 'rng': torch.get_rng_state(), 'shuffle_rng': shuffle.get_state(),
-                 'python_rng': random.getstate(), 'numpy_rng': np.random.get_state(),
-                 'cuda_rng': torch.cuda.get_rng_state_all() if device.type == 'cuda' else None}
-        if improved:
-            save_checkpoint(out / 'best.pth', state)
-        save_checkpoint(out / 'last.pth', state)
-        write_json(out / 'metrics.json', history)
-        print(f"Epoch {index + 1}/{args.epochs}: train={training['accuracy_pct']:.2f}% {monitor}={validation['accuracy_pct']:.2f}% best={best:.2f}%", flush=True)
-    if not (out / 'result.json').exists():
-        testing = epoch(model, DataLoader(test, batch_size=args.batch_size, num_workers=args.workers), device) if test is not None else None
-        best_row = max(history, key=lambda row: row[monitor]['accuracy_pct'])
-        write_json(out / 'result.json', {'parameters': parameters, 'model_version': args.model_version,
-            'normalization': norm, 'dataset': args.dataset, 'seed': args.seed, 'epoch': args.epochs,
-            'checkpoint': 'last.pth', 'monitor': monitor, 'best_monitor_pct': best,
-            'best_epoch': best_row['epoch'], 'last_monitor': history[-1][monitor], 'test': testing,
-            'synthetic': args.smoke, 'torch': torch.__version__, 'device': str(device)})
-    print((out / 'result.json').read_text(encoding='utf-8'))
+    record.update(parameters=parameters, model_config=kwargs, resolved_model=model.resolved_options, normalization=norm,
+                  dataset_sizes={'train': len(train), 'monitor': len(dev), 'test': len(test) if test is not None else 0},
+                  device=str(device), torch=torch.__version__, workers=args.workers, threads=args.threads)
+    metric = args.selection_metric
+    if metric == 'auto':
+        metric = 'balanced_accuracy_pct' if args.dataset == 'k49' else 'accuracy_pct'
+    test_loader = DataLoader(test, batch_size=args.batch_size, num_workers=args.workers) if test is not None else None
+    run_training(model=model, loader=loader, evaluation=evaluation, test_loader=test_loader, optimizer=optimizer,
+                 scheduler=scheduler, shuffle=shuffle, device=device, out=out, epochs=args.epochs, start=start,
+                 monitor=monitor, selection_metric=metric, best_summary=best_summary, last_summary=last_summary,
+                 config=config, state_extra={'model_kwargs': kwargs, 'split': split}, record=record,
+                 epoch_fn=epoch, smoothing=args.label_smoothing)
 
 
 if __name__ == '__main__':

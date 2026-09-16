@@ -2,50 +2,14 @@
 import argparse
 import json
 from pathlib import Path
-import time
 
 import torch
-from torch import nn
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
-from tqdm import tqdm
 
 from tiny_v1 import TinyMNIST
-
-
-def save_checkpoint(path, value):
-    temporary = path.with_suffix(".tmp")
-    torch.save(value, temporary)
-    temporary.replace(path)
-
-
-def write_json(path, value):
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(value, indent=2, allow_nan=False), encoding="utf-8")
-    temporary.replace(path)
-
-
-def epoch(model, loader, device, optimizer=None):
-    model.train(optimizer is not None)
-    loss_sum = correct = count = 0
-    with torch.set_grad_enabled(optimizer is not None):
-        progress = tqdm(loader, desc="train" if optimizer is not None else "eval")
-        for images, labels in progress:
-            images, labels = images.to(device), labels.to(device)
-            if optimizer is not None:
-                optimizer.zero_grad(set_to_none=True)
-            logits = model(images)
-            loss = nn.functional.cross_entropy(logits, labels)
-            if not torch.isfinite(loss):
-                raise RuntimeError("Non-finite loss; last complete epoch remains saved")
-            if optimizer is not None:
-                loss.backward()
-                optimizer.step()
-            count += labels.numel()
-            loss_sum += loss.item() * labels.numel()
-            correct += (logits.argmax(1) == labels).sum().item()
-            progress.set_postfix(loss=loss_sum / count, acc=f"{100 * correct / count:.2f}%")
-    return {"loss": loss_sum / count, "accuracy_pct": 100 * correct / count, "samples": count}
+from runtime import epoch, write_json, save_checkpoint, summaries, run_training
+from records import RunRecord, DEFAULT_RECORDS
 
 
 def main():
@@ -53,7 +17,8 @@ def main():
     p.add_argument("--normalization", choices=("raw", "centered", "standardized"), default="raw")
     p.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parents[1] / "Code/data")
     p.add_argument("--output-dir", type=Path)
-    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--records-dir", type=Path, default=DEFAULT_RECORDS)
+    p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=0)
@@ -70,7 +35,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     out = args.output_dir or Path(__file__).resolve().parent / "runs" / f"{args.normalization}_s{args.seed}"
     config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
-              if k not in ("output_dir", "resume", "workers", "cpu")}
+              if k not in ("output_dir", "records_dir", "resume", "workers", "cpu")}
     config["data_dir"] = str(args.data_dir.resolve())
     config["architecture"] = "tiny_g_1_2_3_linear10_v1"
     checkpoint = None
@@ -80,6 +45,11 @@ def main():
             p.error("Resume requires the original model/data/epochs/seed settings")
     elif out.exists() and any(out.iterdir()):
         p.error("Output is not empty; use --resume or another --output-dir")
+    with RunRecord(args.records_dir, out, config) as record:
+        execute(args, config, checkpoint, out, device, record)
+
+
+def execute(args, config, checkpoint, out, device, record):
     out.mkdir(parents=True, exist_ok=True)
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((.1307,), (.3081,))])
     if args.smoke:
@@ -106,12 +76,13 @@ def main():
     parameters = sum(v.numel() for v in model.parameters())
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * .1)
-    history, start, best = [], 0, -1
+    start = 0
+    best_summary, last_summary = summaries(checkpoint, "dev")
     if checkpoint:
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
-        history, start, best = checkpoint["history"], checkpoint["epoch"], checkpoint["best_dev"]
+        start = checkpoint["epoch"]
         torch.set_rng_state(checkpoint["rng"])
         shuffle.set_state(checkpoint["shuffle_rng"])
         if device.type == "cuda" and checkpoint["cuda_rng"] is not None:
@@ -119,31 +90,16 @@ def main():
     write_json(out / "config.json", config)
     print(f"Device: {device} | Parameters: {parameters:,} | Normalization: {args.normalization}", flush=True)
     print(f"Output: {out.resolve()} | Train/dev/test: {len(train)}/{len(dev)}/{len(test)}", flush=True)
-    for index in range(start, args.epochs):
-        begin = time.perf_counter()
-        training = epoch(model, train_loader, device, optimizer)
-        validation = epoch(model, dev_loader, device)
-        history.append({"epoch": index + 1, "lr": optimizer.param_groups[0]["lr"],
-                        "train": training, "dev": validation, "seconds": time.perf_counter() - begin})
-        improved = validation["accuracy_pct"] > best
-        best = max(best, validation["accuracy_pct"])
-        scheduler.step()
-        state = {"config": config, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                 "scheduler": scheduler.state_dict(), "epoch": index + 1, "history": history,
-                 "best_dev": best, "rng": torch.get_rng_state(), "shuffle_rng": shuffle.get_state(),
-                 "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None}
-        if improved:
-            save_checkpoint(out / "best.pth", state)
-        save_checkpoint(out / "last.pth", state)
-        write_json(out / "metrics.json", history)
-        print(f"Epoch {index + 1}/{args.epochs}: train={training['accuracy_pct']:.2f}% dev={validation['accuracy_pct']:.2f}%", flush=True)
-    # Test only the last checkpoint after all epochs; never use test to select epochs.
-    if not (out / "result.json").exists():
-        testing = epoch(model, DataLoader(test, batch_size=args.batch_size, num_workers=args.workers), device)
-        write_json(out / "result.json", {"parameters": parameters, "normalization": args.normalization,
-            "seed": args.seed, "epoch": args.epochs, "checkpoint": "last.pth", "test": testing,
-            "synthetic": args.smoke, "torch": torch.__version__, "device": str(device)})
-    print((out / "result.json").read_text(encoding="utf-8"))
+    record.update(parameters=parameters, normalization=args.normalization,
+                  model_config={'in_channels': 1, 'image_size': 28, 'num_classes': 10, 'layers': 2, 'alpha': 1},
+                  resolved_model={'version': 'tiny_v1', 'normalization': args.normalization},
+                  device=str(device), torch=torch.__version__, workers=args.workers, threads=4)
+    run_training(model=model, loader=train_loader, evaluation=dev_loader,
+                 test_loader=DataLoader(test, batch_size=args.batch_size, num_workers=args.workers),
+                 optimizer=optimizer, scheduler=scheduler, shuffle=shuffle, device=device, out=out,
+                 epochs=args.epochs, start=start, monitor='dev', selection_metric='accuracy_pct',
+                 best_summary=best_summary, last_summary=last_summary, config=config, state_extra={},
+                 record=record, epoch_fn=epoch)
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ class DataTrainingTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 main(['--dataset', 'imagefolder', '--data-dir', str(root), '--image-size', '8',
                       '--model-version', 'legacy', '--normalization', 'raw', '--epochs', '1',
-                      '--cpu', '--output-dir', str(root / 'run')])
+                      '--cpu', '--output-dir', str(root / 'run'), '--records-dir', str(root / 'records')])
             self.assertTrue((root / 'run/result.json').is_file())
             (root / 'test').rename(root / 'heldout')
             self.assertIsNone(build_data(args)[2])
@@ -73,14 +73,14 @@ class DataTrainingTests(unittest.TestCase):
 
     def test_every_dataset_and_version_smoke(self):
         with tempfile.TemporaryDirectory() as directory:
-            for dataset in ('mnist', 'fashionmnist', 'cifar10', 'cifar100', 'imagefolder'):
+            for dataset in ('mnist', 'fashionmnist', 'cifar10', 'cifar100', 'imagefolder', 'emnist', 'kmnist', 'k49'):
                 for version in ('legacy', 'current', 'tiny'):
                     with self.subTest(dataset=dataset, version=version):
                         out = Path(directory) / f'{dataset}_{version}'
                         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                             main(['--dataset', dataset, '--model-version', version, '--smoke', '--cpu',
                                   '--epochs', '1', '--image-size', '8', '--normalization', 'raw',
-                                  '--chebyshev', '--spatial', '--cross', '--output-dir', str(out)])
+                                  '--chebyshev', '--spatial', '--cross', '--output-dir', str(out), '--records-dir', str(Path(directory) / 'records')])
                         self.assertTrue((out / 'last.pth').is_file())
 
 
