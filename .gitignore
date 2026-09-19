@@ -12,6 +12,9 @@ MNISTTiny/runs/
 TENetTiny/runs/
 TENetTiny/data/
 TENetTiny/records/
+TENetText/runs/
+TENetText/data/
+TENetText/records/
 
 # Model checkpoints / weights
 *.pth

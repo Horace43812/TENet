@@ -14,6 +14,7 @@ TENet 的结构先验来自局部窗口、顶点—边关联关系和递归组�
 | --- | --- | --- |
 | [TENetMechanism/](TENetMechanism/README.md) | 可配置独立 TENet、真实类别探针、层内干预、A–E 归一化实验 | 当前机制研究入口 |
 | [TENetTiny/](TENetTiny/README.md) | current/legacy历史基准、补强与局部归一化开关、全程进度与最佳训练记录 | MNIST、EMNIST、KMNIST/K49、Fashion-MNIST、CIFAR、ImageFolder快速实验 |
+| [TENetText/](TENetText/README.md) | 一维TENet、TextCNN与词向量平均基线，共享词表与训练流程 | AG News新闻主题分类、自定义中文/英文CSV文本分类 |
 | [ViTPruning/](ViTPruning/README.md) | 标准 ViT 与 identity / magnitude / linear / tenet_local 对照 | Token 评分剪枝实验 |
 | [Code/](Code/) | MNIST、CIFAR-10、RGB256 模型与早期训练、分析脚本 | 历史实现与实验追溯 |
 | [docs/](docs/00_index.md) | 研究宣言、计划、早期发现与结果归档 | 查阅研究过程及原始证据 |
